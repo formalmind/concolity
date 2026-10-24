@@ -66,7 +66,7 @@ Operands are written as on the stack, top first: `a, b` = `a` on top.
 | `0x07` | SMOD | exact | `ite (= b 0) 0 (bvsrem a b)`: the sign follows `a` in both |
 | `0x08` | ADDMOD | exact | `ite (= n 0) 0 (extract 255 0 (bvurem (bvadd (zext 1 a) (zext 1 b)) (zext 1 n)))`, at 257 bits |
 | `0x09` | MULMOD | exact | the same at 512 bits with `bvmul` |
-| `0x0a` | EXP | exact when the exponent is concrete: square-and-multiply, at most 2·256 `bvmul`s. Symbolic exponent with base 2: `ite (bvult e 256) (bvshl 1 e) 0`. Base 0 or 1: `ite`. Otherwise the exponent is concretized |
+| `0x0a` | EXP | exact when the exponent is concrete and small (up to 15: at most 8 `bvmul`s, square-and-multiply); a larger exponent concretizes the base, because chains of 256-bit multiplications are what solvers handle worst (z3 took 22 GB on one with 500). Symbolic exponent with base 2: `ite (bvult e 256) (bvshl 1 e) 0`. Base 0 or 1: `ite`. Otherwise the exponent is concretized |
 | `0x0b` | SIGNEXTEND | exact when `b` is concrete: `ite (bvult b 31) (sign_extend from bit 8b+7) x`. Symbolic `b`: concretized |
 
 ### Comparison and bitwise
@@ -197,20 +197,31 @@ The model is the part that must not be wrong, so it's checked three ways:
 3. **ethereum/tests VMTests**, with all inputs symbolic: every test still runs to the same result, and the
    self-check passes on every step.
 
+## Status (2026-10-24)
+
+Built, in `src/expr.rs` (terms), `src/shadow.rs` (the model, as a revm inspector) and `src/smt.rs` (z3):
+
+- every opcode's stack effect, and the exact models of all arithmetic, comparison and bit ops, `CLZ` included;
+- memory, calldata and return-data byte shadows, `MCOPY`, the copies, storage and transient shadows with rollback
+  on revert, frames across `CALL`/`STATICCALL`/`DELEGATECALL`/`CREATE`, and the identity precompile;
+- `CALLER`, `CALLVALUE`, `ORIGIN`, `TIMESTAMP`, `NUMBER` and `PREVRANDAO` as opt-in inputs;
+- KECCAK256 of symbolic bytes as a fresh input;
+- check 1, the self-check on every step, and check 2, z3 on edge values: `tests/opcodes.rs` runs 9,944 programs
+  and asks z3 3,172 times. Two planted bugs (one in the arena's `SMOD`, one in the SMT-LIB of `DIV`) were each
+  caught by one of the two checks.
+
+Not built yet:
+
+- the equal-input ⇒ equal-hash constraints for KECCAK256, and `needs-preimage` reporting;
+- a symbolic `CALLDATASIZE` (the no-ABI mode) and `SELFBALANCE` plus a symbolic `CALLVALUE`;
+- check 3, the ethereum/tests VMTests.
+
 ## Code
 
 ```
-src/evm/
-  mod.rs       the 256-entry table: opcode → Model
-  arith.rs     0x01–0x0b
-  bits.rs      0x10–0x1e
-  env.rs       0x30–0x4a sources and concretes
-  memory.rs    byte-shadow memory, calldata, return data, copies
-  storage.rs   storage and transient shadows, rollback on revert
-  frames.rs    call / create / return / revert plumbing, precompiles
-  check.rs     term evaluation and the self-check
+src/expr.rs    the arena: terms, folding, and each term's value in the run (what the self-check compares)
+src/shadow.rs  the model: Shadow::model has one arm per opcode family; anything without its own arm is concrete,
+               its symbolic operands concretized, its outputs (from revm's opcode table) unshadowed. So no
+               opcode is ever missing.
+src/smt.rs     SMT-LIB printing and the z3 process
 ```
-
-`Model` is an enum: `Exact(fn(&mut Arena, &[Shadow]) -> Shadow)`, `Source(SourceKind)`,
-`Concrete { concretize: &'static [usize] }` (which operands), and `Effect(EffectKind)`. Every byte maps to a
-model, so no opcode is ever missing.

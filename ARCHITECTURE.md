@@ -220,7 +220,7 @@ src/
   shadow.rs     5   the Inspector
   smt.rs        6
   tree.rs       7
-  evm/          the opcode model (EVM-MODEL.md), used by shadow.rs
+  (the opcode model, EVM-MODEL.md, lives in shadow.rs)
   oracle.rs     8
   report.rs     9
   source.rs    10   CodeMap, AST names, harness (behind the `source` feature)
