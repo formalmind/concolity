@@ -163,27 +163,33 @@ impl Filters {
 struct Permissions {
     ffi: bool,
     writable: Vec<PathBuf>,
+    readable: Vec<PathBuf>,
 }
 
 impl Permissions {
     fn from_foundry(root: &Path) -> Permissions {
-        let none = Permissions { ffi: false, writable: vec![] };
+        let none = Permissions { ffi: false, writable: vec![], readable: vec![] };
         let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return none };
         let Ok(doc) = text.parse::<toml::Table>() else { return none };
         let Some(p) = doc.get("profile").and_then(|p| p.get("default")) else { return none };
-        let writable = p
-            .get("fs_permissions")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .filter(|e| e.get("access").and_then(|a| a.as_str()).is_some_and(|a| a == "read-write" || a == "write"))
-            .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
-            .map(|path| {
-                let full = root.join(path);
-                full.canonicalize().unwrap_or(full)
-            })
-            .collect();
-        Permissions { ffi: p.get("ffi").and_then(|v| v.as_bool()).unwrap_or(false), writable }
+        let with = |ok: &dyn Fn(&str) -> bool| -> Vec<PathBuf> {
+            p.get("fs_permissions")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter(|e| e.get("access").and_then(|a| a.as_str()).is_some_and(ok))
+                .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+                .map(|path| {
+                    let full = root.join(path);
+                    full.canonicalize().unwrap_or(full)
+                })
+                .collect()
+        };
+        Permissions {
+            ffi: p.get("ffi").and_then(|v| v.as_bool()).unwrap_or(false),
+            writable: with(&|a| a == "read-write" || a == "write"),
+            readable: with(&|a| a == "read-write" || a == "read"),
+        }
     }
 }
 
@@ -516,6 +522,7 @@ fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serd
             s.evm.inspector.cheats.ffi_allow = vec!["*".into()];
         }
         s.evm.inspector.cheats.writable = permissions.writable.clone();
+        s.evm.inspector.cheats.readable = permissions.readable.clone();
         // Libraries deployed and getCode's map built once, in the state every test contract starts from.
         s.serve_get_code()?;
         Ok(s)

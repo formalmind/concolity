@@ -70,6 +70,15 @@ The 48 disagreements on the way to 0 were all runner bugs, found by `--against-f
 transient storage is cleared between them (Async Swap's pending-match slot, set while placing an order, survived into
 `matchBook`). That one rule fixed 39 tests.
 
+#### Conformance with forge's own tests
+
+foundry's `testdata/default/cheats` (v1.8.6, one or more files per cheatcode) is the reference suite: forge 1.8.6's
+verdicts on it are the oracle, compared with `--against-forge`. On 2026-10-24: **479 tests pass here** (forge: 812
+pass, 16 fail, 10 skip of 838), with 339 disagreements left. What remains, largest first: state-diff recording
+(`startStateDiffRecording` / `stopAndReturnStateDiff`), arbitrary storage, Ed25519 keys, EIP-7702 delegations,
+`dumpState`, `broadcastRawTransaction` / `executeTransaction`, mapping storage hooks, the `expectRevert` count and
+reverter variants, blob hashes, `getChain`, and chain-specific cheatcodes (Tempo, Monad).
+
 ### `concolity debug`: the debugger for agents
 
 ```
