@@ -7,9 +7,9 @@
 
 use crate::expr::{Arena, BinOp, CmpOp, ExprId, Sort};
 use revm::bytecode::opcode::{self as op, OpCode};
-use revm::interpreter::interpreter_types::{InputsTr, Jumps};
+use revm::interpreter::interpreter_types::{InputsTr, Jumps, LegacyBytecode, MemoryTr};
 use revm::interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult};
-use revm::primitives::{address, Address, Bytes, U256};
+use revm::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use revm::Inspector;
 use std::collections::HashMap;
 
@@ -36,6 +36,8 @@ impl Default for Sym {
 #[derive(Clone, Debug)]
 pub struct Decision {
     pub address: Address,
+    /// The code the JUMPI is in (keccak of the running bytecode): under DELEGATECALL it isn't the address's.
+    pub code: B256,
     pub pc: usize,
     /// The condition (a boolean): true jumps.
     pub cond: ExprId,
@@ -76,6 +78,7 @@ pub struct Hash {
 #[derive(Default)]
 struct Frame {
     address: Address,
+    code: B256,
     stack: Vec<Option<ExprId>>,
     /// Byte shadows; a byte absent here is concrete.
     memory: HashMap<usize, ExprId>,
@@ -98,6 +101,9 @@ struct Pending {
 }
 
 const IDENTITY: Address = address!("0000000000000000000000000000000000000004");
+/// forge's cheatcode address, and `assume(bool)`.
+const HEVM: Address = address!("7109709ECfa91a80626fF3989D68f67F5b1DD12D");
+const ASSUME: [u8; 4] = [0x4c, 0x63, 0xe5, 0x62];
 /// The most memory a single op's shadow copy will walk (bigger ranges are cleared or dropped).
 const MAX_RANGE: usize = 1 << 20;
 /// `EXP` with a symbolic base stays exact up to this many multiplications (exponents up to 15).
@@ -491,7 +497,8 @@ impl Shadow {
                 self.concretize(address, p, 0);
                 if let Some(c) = p.ins[1] {
                     let cond = self.arena.to_bool(c);
-                    self.path.push(Decision { address, pc: p.pc, cond, jumped: !p.vals[1].is_zero() });
+                    let code = self.frames[f].code;
+                    self.path.push(Decision { address, code, pc: p.pc, cond, jumped: !p.vals[1].is_zero() });
                 }
                 vec![]
             }
@@ -507,6 +514,8 @@ impl Shadow {
                 ins.swap(0, n);
                 ins.into_iter().rev().collect()
             }
+            // Discarding a value doesn't depend on it: nothing to pin.
+            op::POP => vec![],
             // Logs change nothing that execution reads.
             _ if (op::LOG0..=op::LOG4).contains(&o) => vec![],
             // Everything else is concrete: its symbolic operands are concretized, its results have no shadow.
@@ -568,7 +577,19 @@ impl<CTX> Inspector<CTX> for Shadow {
                 let args = if matches!(o, op::CALL | op::CALLCODE) { 3 } else { 2 };
                 let (off, len) = (p.vals[args].saturating_to::<usize>(), p.vals[args + 1].saturating_to::<usize>());
                 let f = self.frames.last_mut().unwrap();
-                f.call_args = Some(if len > MAX_RANGE { vec![] } else { (0..len).map(|i| f.memory.get(&(off + i)).copied()).collect() });
+                let args_shadow: Vec<Option<ExprId>> = if len > MAX_RANGE { vec![] } else { (0..len).map(|i| f.memory.get(&(off + i)).copied()).collect() };
+                // `vm.assume(cond)` with a symbolic condition: every solution must satisfy it, as the test does.
+                if p.vals[1] == U256::from_be_slice(HEVM.as_slice()) && len >= 36 && args_shadow[4..36].iter().any(Option::is_some) {
+                    let concrete = interp.memory.slice(off..off + 36).to_vec();
+                    if concrete[..4] == ASSUME {
+                        if let Some(w) = self.word_from(&args_shadow[4..36], U256::from_be_slice(&concrete[4..36])) {
+                            let c = self.arena.to_bool(w);
+                            self.assumptions.push(c);
+                        }
+                    }
+                }
+                let f = self.frames.last_mut().unwrap();
+                f.call_args = Some(args_shadow);
             }
             op::CREATE | op::CREATE2 | op::SELFDESTRUCT => {
                 for i in 0..p.ins.len() {
@@ -622,11 +643,16 @@ impl<CTX> Inspector<CTX> for Shadow {
     }
 
     fn initialize_interp(&mut self, interp: &mut Interpreter, _: &mut CTX) {
+        if self.frames.is_empty() {
+            let a = interp.input.target_address();
+            self.push_frame(a, None);
+        }
         // A create frame learns its address when its interpreter starts.
         if let Some(f) = self.frames.last_mut() {
             if f.address == Address::ZERO {
                 f.address = interp.input.target_address();
             }
+            f.code = keccak256(interp.bytecode.bytecode_slice());
         }
     }
 

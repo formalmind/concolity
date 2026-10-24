@@ -4,6 +4,7 @@
 
 pub mod chain;
 pub mod coverage;
+pub mod explore;
 pub mod expr;
 pub mod shadow;
 pub mod smt;

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[test]
 fn triangle_suite_matches_forge_lines_and_flags_the_missing_callee() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/triangle-project");
-    let opts = Options { root, test_dir: "test".into(), skip: vec!["Failing".into()], include: vec!["src/".into()], fuzz_runs: 32, fast: false };
+    let opts = Options { root, test_dir: "test".into(), skip: vec!["Failing".into(), "Explore".into()], include: vec!["src/".into()], fuzz_runs: 32, fast: false };
     let report = match run(&opts) {
         Err(e) if e.to_string().contains("isn't installed") => return eprintln!("skipped: {e}"),
         r => r.unwrap(),

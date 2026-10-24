@@ -119,7 +119,7 @@ pub struct Report {
 /// forge's test filters from foundry.toml's default profile (`match_test`, `no_match_test`, `match_contract`,
 /// `no_match_contract`): regexes searched in the test's or the contract's name, as forge applies them.
 #[derive(Default)]
-struct Filters {
+pub(crate) struct Filters {
     match_test: Option<regex::Regex>,
     no_match_test: Option<regex::Regex>,
     match_contract: Option<regex::Regex>,
@@ -127,7 +127,7 @@ struct Filters {
 }
 
 impl Filters {
-    fn from_foundry(root: &Path) -> Filters {
+    pub(crate) fn from_foundry(root: &Path) -> Filters {
         let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return Filters::default() };
         let Ok(doc) = text.parse::<toml::Table>() else { return Filters::default() };
         let p = doc.get("profile").and_then(|p| p.get("default"));
@@ -141,7 +141,7 @@ impl Filters {
     }
 
     /// Why forge wouldn't run this test, if it wouldn't.
-    fn excludes(&self, contract: &str, test: &str) -> Option<&'static str> {
+    pub(crate) fn excludes(&self, contract: &str, test: &str) -> Option<&'static str> {
         let name = &test[..test.find('(').unwrap_or(test.len())];
         if self.match_test.as_ref().is_some_and(|r| !r.is_match(name)) {
             return Some("foundry.toml match_test");
@@ -160,14 +160,14 @@ impl Filters {
 }
 
 /// foundry.toml's `ffi` and the read-write `fs_permissions` folders (absolute).
-struct Permissions {
-    ffi: bool,
-    writable: Vec<PathBuf>,
-    readable: Vec<PathBuf>,
+pub(crate) struct Permissions {
+    pub(crate) ffi: bool,
+    pub(crate) writable: Vec<PathBuf>,
+    pub(crate) readable: Vec<PathBuf>,
 }
 
 impl Permissions {
-    fn from_foundry(root: &Path) -> Permissions {
+    pub(crate) fn from_foundry(root: &Path) -> Permissions {
         let none = Permissions { ffi: false, writable: vec![], readable: vec![] };
         let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return none };
         let Ok(doc) = text.parse::<toml::Table>() else { return none };
@@ -194,7 +194,7 @@ impl Permissions {
 }
 
 /// The test files under `dir`, relative to the root, sorted.
-fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
+pub(crate) fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
     let mut out = vec![];
     let mut stack = vec![root.join(dir)];
     while let Some(d) = stack.pop() {
@@ -218,7 +218,7 @@ fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
 
 /// The suite's solc output, from `~/.cache/formalmind/solc/` when nothing it depends on changed: the key hashes the
 /// solc version, the settings, the entry files and the content of every `.sol` file in the project.
-fn compile_cached(project: &formal_ast::solc::Project, entries: &[String], settings: &Settings) -> Result<serde_json::Value> {
+pub(crate) fn compile_cached(project: &formal_ast::solc::Project, entries: &[String], settings: &Settings) -> Result<serde_json::Value> {
     let mut key = format!("{:?}|{:?}|{:?}|{:?}|{entries:?}", project.solc_version, project.evm_version, settings, project.remappings);
     let mut sols = vec![];
     let mut stack = vec![project.root.clone()];
@@ -262,7 +262,7 @@ fn compile_cached(project: &formal_ast::solc::Project, entries: &[String], setti
 }
 
 /// A small deterministic generator: xorshift.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -290,7 +290,7 @@ impl Rng {
         v & max
     }
 
-    fn value(&mut self, t: &DynSolType) -> Option<DynSolValue> {
+    pub(crate) fn value(&mut self, t: &DynSolType) -> Option<DynSolValue> {
         Some(match t {
             DynSolType::Bool => DynSolValue::Bool(self.next().is_multiple_of(2)),
             DynSolType::Uint(b) => DynSolValue::Uint(self.uint(*b), *b),
@@ -320,7 +320,7 @@ impl Rng {
 }
 
 /// Is this artifact a Foundry test contract: from the test folder, with test functions.
-fn test_functions(s: &Session, i: usize, test_dir: &str) -> Vec<String> {
+pub(crate) fn test_functions(s: &Session, i: usize, test_dir: &str) -> Vec<String> {
     let a = &s.artifacts[i];
     if !a.file.starts_with(test_dir) {
         return vec![];
@@ -333,7 +333,7 @@ fn test_functions(s: &Session, i: usize, test_dir: &str) -> Vec<String> {
         .collect()
 }
 
-fn reason(run: &sol_debug::Run) -> String {
+pub(crate) fn reason(run: &sol_debug::Run) -> String {
     run.revert_reason().unwrap_or_else(|| format!("0x{}", revm::primitives::hex::encode(&run.output[..run.output.len().min(68)])))
 }
 
@@ -446,7 +446,7 @@ struct Part {
 }
 
 /// Test files in `n` batches of about equal size (largest first, each to the lightest batch).
-fn batches(root: &Path, files: &[String], n: usize) -> Vec<Vec<String>> {
+pub(crate) fn batches(root: &Path, files: &[String], n: usize) -> Vec<Vec<String>> {
     let mut sized: Vec<(u64, &String)> = files.iter().map(|f| (std::fs::metadata(root.join(f)).map_or(0, |m| m.len()), f)).collect();
     sized.sort_by(|a, b| b.cmp(a));
     let n = n.clamp(1, files.len().max(1));

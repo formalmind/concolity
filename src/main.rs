@@ -39,6 +39,28 @@ enum Command {
         #[arg(long)]
         fast: bool,
     },
+    /// The explore loop: untaken JUMPI sides as targets, fuzz tests as harnesses, z3 to solve for them.
+    Explore {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "test")]
+        test_dir: String,
+        #[arg(long)]
+        skip: Vec<String>,
+        #[arg(long, default_value = "src/")]
+        include: Vec<String>,
+        /// Only fuzz tests whose Contract::name contains this.
+        #[arg(long)]
+        only: Option<String>,
+        #[arg(long, default_value_t = 12)]
+        runs_per_test: usize,
+        #[arg(long, default_value_t = 6)]
+        flips_per_run: usize,
+        #[arg(long, default_value_t = 1000)]
+        timeout_ms: u32,
+        #[arg(long, default_value_t = 2)]
+        seeds: usize,
+    },
     /// Debug one Foundry test, for an agent: answers are JSON (`--text` for the line view people read).
     Debug {
         root: PathBuf,
@@ -87,6 +109,11 @@ fn main() -> Result<()> {
                 std::fs::write(&path, report.lcov())?;
                 eprintln!("lcov: {}", path.display());
             }
+        }
+        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds } => {
+            let coverage = concolity::coverage::Options { root, test_dir, skip, include, fuzz_runs: 32, fast: false };
+            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only };
+            print!("{}", concolity::explore::run(&opts)?.summary());
         }
         Command::Debug { root, file, test, query, args, n, var, function, limit, text } => {
             use sol_debug::agent;
