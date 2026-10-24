@@ -8,6 +8,45 @@ again until nothing is left.
 Most techniques come from [The Fuzzing Book](https://www.fuzzingbook.org) and its companion,
 [The Debugging Book](https://www.debuggingbook.org), moved onto the EVM and its compilers.
 
+## Two modes
+
+The toolkit works in two modes, and the user picks per project:
+
+- **Testing mode, no Lean.** Coverage, concolic, fuzzing, mutation, information flow, and the agent debugger,
+  all on bytecode in revm. Fast, and nothing to learn. Findings come with a PoC and a fix.
+- **Lean mode.** The same code also gets a semantics in Lean, and properties are proved, not only tested.
+
+Lean mode builds on [solidity-lean](https://github.com/paradigmxyz/solidity-lean) (Paradigm's SolidCore). It is an
+executable semantics of Solidity in Lean 4 that imports, type-checks, lowers and interprets single-contract programs,
+and checks the results byte for byte against solc and the EVM through a forge replay corpus. Its v1 leaves out what
+real protocols need most: external calls, contract creation and inline assembly. We add those with **interaction
+trees** (ITrees):
+
+```mermaid
+flowchart LR
+    sol[Solidity, solc AST] --> itree["each function as an ITree: Ret, Tau, Vis (Call | Create | Log | SLoad / SStore)"]
+    itree --> handler{handler: the world}
+    handler -->|"bound: the callee's own ITree, from its exact code"| exact[exact world]
+    handler -->|"opaque: any answer, within stated assumptions"| open[open world: a theorem for every callee]
+    exact --> proofs[proofs]
+    open --> proofs
+    itree <-->|differential: same inputs, same observables| evm[revm run of the solc bytecode]
+```
+
+- **A call is an event, not a step.** A function's ITree stops at `Vis (Call to data)` and continues with whatever
+  the call returns. The semantics of one contract doesn't need to know its callees.
+- **The handler is the binding.** It interprets the events:
+  - *exact*: run the bound callee's ITree. The binding table from `concolity coverage` says which code that is, so
+    it is the same code the tests ran;
+  - *open*: any return within stated assumptions (a token that may return false, a hook that may reenter). A theorem
+    proved against the open handler holds for every callee, which is how reentrancy and hostile tokens get proved
+    rather than tested.
+- **Checked against the EVM, like SolidCore.** The ITree semantics runs on the same inputs as revm, and the observables
+  must match: return data, revert data, events, storage. concolity generates those inputs: one per path it can solve,
+  so conformance is checked on every branch, not on samples. A divergence is a bug in the model.
+- **What it replaces.** formal-ast's Lean generator, which translates each contract into its own model and links
+  them through `Ext`, becomes ITree-based. The bindings it does today (by selector, hooks, raw calls) become handlers.
+
 ## The shared engine
 
 Everything below needs the same few things, and concolity already has most of them:
@@ -122,7 +161,8 @@ The measures say when the spec is strong enough:
 
 ## Order
 
-1. **solc coverage** (1): the slow-coverage pain today, and the feedback signal for 3, 4, 5 and 16.
+1. **solc coverage** (1): the slow-coverage pain today, and the feedback signal for 3, 4, 5 and 16. *Built:*
+   `concolity coverage`, with bindings and missing bytecode first; the agent debugger (`concolity debug`) came with it.
 2. **concolity's explore loop** (2): the trace tree, so it explores on its own. Then reduction (12) for its findings.
 3. **Mutation-based and greybox fuzzing** (3, 4), on bytecode, sharing 1's coverage. Unverified contracts on a
    fork.

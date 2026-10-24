@@ -3,6 +3,7 @@
 //! EVM-MODEL.md; [`smt`] hands path conditions to z3. See ARCHITECTURE.md.
 
 pub mod chain;
+pub mod coverage;
 pub mod expr;
 pub mod shadow;
 pub mod smt;
