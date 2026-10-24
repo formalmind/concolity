@@ -2,7 +2,7 @@
 
 revm runs every opcode for real. concolity only has to say, for each opcode, what the **symbolic shadow** of its
 result is, and what it does to the shadow memory, storage, calldata and return data. This file is that model for
-all 149 opcodes of the current mainnet fork (Osaka, with `CLZ`). EOF opcodes aren't on mainnet and aren't modelled.
+all 150 opcodes of the current mainnet fork (Osaka, with `CLZ`). EOF opcodes aren't on mainnet and aren't modelled.
 Bytes that aren't opcodes behave like `INVALID`.
 
 ## Shadow state
@@ -172,7 +172,7 @@ Operands are written as on the stack, top first: `a, b` = `a` on top.
 | `0xfe` | INVALID | halt; an oracle finding |
 | `0xff` | SELFDESTRUCT | beneficiary concretized |
 
-**Precompiles** (`0x01`–`0x11`) run concretely. The input range is concretized, and the output has no shadow, except
+**Precompiles** (`0x01`–`0x11`, and `0x100` P256VERIFY) run concretely. The input range is concretized, and the output has no shadow, except
 `0x04` identity, whose output shadows are its input shadows. Solidity uses it for memory copies.
 
 ## What the model doesn't follow
