@@ -64,14 +64,16 @@ ABI decoder, a `try`/`catch`) needs nothing special here.
 
 ## 2. Pipeline
 
-```
-seed (a test, a call sequence, or empty calldata)
-  → run in revm with the Shadow inspector         concrete values + symbolic shadows
-  → path: [(code, pc, AST node, cond, taken)]     one entry per JUMPI whose cond is symbolic
-  → pick a branch to flip                          uncovered AST nodes first
-  → solve  prefix ∧ ¬cond  (SMT-LIB2 → z3/bitwuzla)
-  → new inputs → run again                         generational search (SAGE)
-  → oracles on every run                           panics, assert, invariants, attacker balance
+Bytecode first: the path is a list of `JUMPI` sites (pcs). Lines and AST nodes are added when a source map exists
+([ARCHITECTURE.md](ARCHITECTURE.md)).
+
+```mermaid
+flowchart LR
+    seed["seed: a test, a call sequence, or zero calldata"] --> run["run in revm with the Shadow inspector"]
+    run -->|"path: (site, cond, side) per symbolic JUMPI"| tree["trace tree: pick an untaken side"]
+    tree -->|"prefix and not cond"| smt["z3 / bitwuzla"]
+    smt -->|new calldata| run
+    run --> oracles["oracles: panics, INVALID, invariants, balances"]
 ```
 
 ## 3. The Shadow inspector (`concolity`)
