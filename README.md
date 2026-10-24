@@ -73,9 +73,10 @@ transient storage is cleared between them (Async Swap's pending-match slot, set 
 #### Conformance with forge's own tests
 
 foundry's `testdata/default/cheats` (v1.8.6, one or more files per cheatcode) is the reference suite: forge 1.8.6's
-verdicts on it are the oracle, compared with `--against-forge`. On 2026-10-24: **479 tests pass here** (forge: 812
-pass, 16 fail, 10 skip of 838), with 339 disagreements left. What remains, largest first: state-diff recording
-(`startStateDiffRecording` / `stopAndReturnStateDiff`), arbitrary storage, Ed25519 keys, EIP-7702 delegations,
+verdicts on it are the oracle, compared with `--against-forge`. On 2026-10-24: **520 tests pass here** (forge: 812
+pass, 16 fail, 10 skip of 838), with 298 disagreements left. State diffs (`startStateDiffRecording`,
+`stopAndReturnStateDiff`, `getStateDiff(Json)`, named and decoded from the storage layout) match all 34 of forge's
+tests. What remains, largest first: arbitrary storage, Ed25519 keys, EIP-7702 delegations,
 `dumpState`, `broadcastRawTransaction` / `executeTransaction`, mapping storage hooks, the `expectRevert` count and
 reverter variants, blob hashes, `getChain`, and chain-specific cheatcodes (Tempo, Monad).
 
