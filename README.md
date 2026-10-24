@@ -58,10 +58,17 @@ On asyncswap/contracts at `3295d4d` (125 test files, 850 tests, `optimizer_runs 
 | time | 65 s | 48 s cold, 29 s with the cache |
 | lines | 99.90% (966 / 967) | 99.9% (931 / 932): the 35 fewer lines are code the optimizer removes |
 | what it measures | unoptimized build | the optimized bytecode that ships |
-| tests agreeing with `forge test` | – | 788 pass; 48 still differ (being worked through) |
+| verdicts against `forge test` | – | **836 of 836 identical**, 0 disagreements |
 
-Not yet: invariant campaigns (`invariant_*` are listed as skipped), forks inside tests (`createFork`), and
-`expectCall` is accepted but not checked.
+Skipped, with the reason in the report: invariant campaigns (`invariant_*`, no campaign runner yet), forks inside
+tests (`createFork`: forge forks the live chain there), and tests foundry.toml's `match_test` / `no_match_test`
+filters exclude. `expectCall` is accepted but not checked. A failing fuzz test reports its counterexample as `--arg`
+values for `concolity debug`.
+
+The 48 disagreements on the way to 0 were all runner bugs, found by `--against-forge` and diagnosed with
+`concolity debug`. The biggest one: forge runs each of a test contract's top-level calls as its own transaction, so
+transient storage is cleared between them (Async Swap's pending-match slot, set while placing an order, survived into
+`matchBook`). That one rule fixed 39 tests.
 
 ### `concolity debug`: the debugger for agents
 

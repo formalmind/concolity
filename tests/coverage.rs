@@ -26,7 +26,18 @@ fn triangle_suite_matches_forge_lines_and_flags_the_missing_callee() {
 
     // Two calls into empty accounts, both by design: Triangle.t.sol's to 0xdead, and Cheats.t.sol's to the oracle
     // after clearMockedCalls (while the mock was set, the cheatcode answered: not a missing callee).
+    let line_of = |file: &str, text: &str| {
+        let src = std::fs::read_to_string(opts.root.join(file)).unwrap();
+        let n = src.lines().enumerate().filter(|(_, l)| l.contains(text)).map(|(i, _)| i + 1).last().unwrap();
+        format!("{file}:{n}")
+    };
     let mut missing: Vec<&str> = report.bindings.iter().filter(|b| b.missing).map(|b| b.site.as_str()).collect();
     missing.sort();
-    assert_eq!(missing, ["test/Cheats.t.sol:66", "test/Triangle.t.sol:38"]);
+    assert_eq!(
+        missing,
+        [
+            line_of("test/Cheats.t.sol", "(ok, out) = oracle.staticcall"),
+            line_of("test/Triangle.t.sol", "address(0xdead).call"),
+        ]
+    );
 }

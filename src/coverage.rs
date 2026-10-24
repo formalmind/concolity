@@ -114,6 +114,49 @@ pub struct Report {
     pub run_time: Duration,
 }
 
+/// forge's test filters from foundry.toml's default profile (`match_test`, `no_match_test`, `match_contract`,
+/// `no_match_contract`): regexes searched in the test's or the contract's name, as forge applies them.
+#[derive(Default)]
+struct Filters {
+    match_test: Option<regex::Regex>,
+    no_match_test: Option<regex::Regex>,
+    match_contract: Option<regex::Regex>,
+    no_match_contract: Option<regex::Regex>,
+}
+
+impl Filters {
+    fn from_foundry(root: &Path) -> Filters {
+        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return Filters::default() };
+        let Ok(doc) = text.parse::<toml::Table>() else { return Filters::default() };
+        let p = doc.get("profile").and_then(|p| p.get("default"));
+        let re = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).and_then(|r| regex::Regex::new(r).ok());
+        Filters {
+            match_test: re("match_test"),
+            no_match_test: re("no_match_test"),
+            match_contract: re("match_contract"),
+            no_match_contract: re("no_match_contract"),
+        }
+    }
+
+    /// Why forge wouldn't run this test, if it wouldn't.
+    fn excludes(&self, contract: &str, test: &str) -> Option<&'static str> {
+        let name = &test[..test.find('(').unwrap_or(test.len())];
+        if self.match_test.as_ref().is_some_and(|r| !r.is_match(name)) {
+            return Some("foundry.toml match_test");
+        }
+        if self.no_match_test.as_ref().is_some_and(|r| r.is_match(name)) {
+            return Some("foundry.toml no_match_test");
+        }
+        if self.match_contract.as_ref().is_some_and(|r| !r.is_match(contract)) {
+            return Some("foundry.toml match_contract");
+        }
+        if self.no_match_contract.as_ref().is_some_and(|r| r.is_match(contract)) {
+            return Some("foundry.toml no_match_contract");
+        }
+        None
+    }
+}
+
 /// The test files under `dir`, relative to the root, sorted.
 fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
     let mut out = vec![];
@@ -414,8 +457,13 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
         }
     };
     let ready = s.snapshot();
+    let filters = Filters::from_foundry(&s.project.root);
     for sig in fns {
         let name = &sig[..sig.find('(').unwrap()];
+        if let Some(why) = filters.excludes(&short, sig) {
+            tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped(why.into()), runs: 0, rejected: 0 });
+            continue;
+        }
         if name.starts_with("invariant") {
             tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped("invariant campaign".into()), runs: 0, rejected: 0 });
             continue;
@@ -427,11 +475,14 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
         let runs = if fuzz { fuzz_runs } else { 1 };
         let mut result = TestResult { contract: short.clone(), test: sig.clone(), status: Status::Pass, runs: 0, rejected: 0 };
         for _ in 0..runs {
+            let mut shown = String::new();
             let data = if fuzz {
                 let Some(DynSolValue::Tuple(args)) = types.as_ref().and_then(|t| rng.value(t)) else {
                     result.status = Status::Skipped(format!("can't generate {params}"));
                     break;
                 };
+                // The counterexample, as `--arg` values for `concolity debug`.
+                shown = args.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" ");
                 let mut d = keccak256(sig.as_bytes())[..4].to_vec();
                 d.extend(DynSolValue::Tuple(args).abi_encode_params());
                 d
@@ -457,7 +508,8 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
                 break;
             }
             if run.success == fail_expected {
-                result.status = Status::Fail(why.unwrap_or_else(|| "testFail didn't revert".into()));
+                let why = why.unwrap_or_else(|| "testFail didn't revert".into());
+                result.status = Status::Fail(if fuzz { format!("{why} [args: {shown}]") } else { why });
                 break;
             }
         }
@@ -619,8 +671,17 @@ pub fn against_forge(report: &Report, forge_json: &serde_json::Value) -> Vec<Str
         }
     }
     let mut out = vec![];
+    let here: BTreeSet<(String, String)> = report.tests.iter().map(|t| (t.contract.clone(), t.test.clone())).collect();
+    for (contract, test) in forge.keys().filter(|k| !here.contains(*k)) {
+        out.push(format!("{contract}::{test}  forge: ran  here: not found"));
+    }
     for t in &report.tests {
-        let Some((ok, reason)) = forge.get(&(t.contract.clone(), t.test.clone())) else { continue };
+        let Some((ok, reason)) = forge.get(&(t.contract.clone(), t.test.clone())) else {
+            if !matches!(t.status, Status::Skipped(_)) {
+                out.push(format!("{}::{}  forge: not run  here: {}", t.contract, t.test, if t.status == Status::Pass { "pass" } else { "fail" }));
+            }
+            continue;
+        };
         let ours = match &t.status {
             Status::Pass => Some(true),
             Status::Fail(_) => Some(false),
@@ -714,6 +775,21 @@ impl Report {
             let _ = writeln!(o, "\nunsupported cheatcodes, by failed tests:");
             for (sel, n) in &self.unsupported {
                 let _ = writeln!(o, "  {sel}  {n}×");
+            }
+        }
+        let mut skipped: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for t in &self.tests {
+            if let Status::Skipped(why) = &t.status {
+                skipped.entry(why.as_str()).or_default().push(format!("{}::{}", t.contract, t.test));
+            }
+        }
+        if !skipped.is_empty() {
+            let _ = writeln!(o, "\nskipped:");
+            for (why, list) in &skipped {
+                let _ = writeln!(o, "  {why}: {}", list.len());
+                for t in list {
+                    let _ = writeln!(o, "    {t}");
+                }
             }
         }
         let failed: Vec<_> = self.tests.iter().filter(|t| matches!(t.status, Status::Fail(_))).collect();

@@ -40,6 +40,8 @@ contract CheatsTest {
         c = new Counter();
     }
 
+    receive() external payable {}
+
     function test_storeAndLoad() public {
         vm.store(address(c), bytes32(0), bytes32(uint256(41)));
         require(c.count() == 41, "store");
@@ -78,6 +80,18 @@ contract CheatsTest {
         require(c.count() == 1, "bumped");
         require(vm.revertToState(id), "reverted");
         require(c.count() == 0, "back to the snapshot");
+    }
+
+    /// An account first touched after the snapshot gets its balance back too.
+    function test_snapshotUndoesATransferToAFreshAccount() public {
+        address fresh = address(0xbeef01);
+        uint256 id = vm.snapshotState();
+        payable(fresh).transfer(1 ether);
+        require(fresh.balance == 1 ether, "paid");
+        require(vm.revertToState(id), "reverted");
+        require(fresh.balance == 0, "back to no balance");
+        payable(fresh).transfer(1 ether);
+        require(fresh.balance == 1 ether, "paid once");
     }
 
     function test_nonceAndAddresses() public {

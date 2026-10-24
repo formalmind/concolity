@@ -1102,9 +1102,11 @@ dependencies = [
  "anyhow",
  "clap",
  "formal-ast",
+ "regex",
  "revm",
  "serde_json",
  "sol-debug",
+ "toml",
 ]
 
 [[package]]
