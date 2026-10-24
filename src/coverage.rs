@@ -110,6 +110,8 @@ pub struct Report {
     pub unsupported: BTreeMap<String, usize>,
     /// Code that ran but isn't from this compile (etched mocks, Huff), by hash.
     pub foreign_code: usize,
+    /// Files that didn't compile (their tests didn't run), with solc's errors.
+    pub compile_errors: Vec<String>,
     pub compile_time: Duration,
     pub run_time: Duration,
 }
@@ -157,6 +159,34 @@ impl Filters {
     }
 }
 
+/// foundry.toml's `ffi` and the read-write `fs_permissions` folders (absolute).
+struct Permissions {
+    ffi: bool,
+    writable: Vec<PathBuf>,
+}
+
+impl Permissions {
+    fn from_foundry(root: &Path) -> Permissions {
+        let none = Permissions { ffi: false, writable: vec![] };
+        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return none };
+        let Ok(doc) = text.parse::<toml::Table>() else { return none };
+        let Some(p) = doc.get("profile").and_then(|p| p.get("default")) else { return none };
+        let writable = p
+            .get("fs_permissions")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|e| e.get("access").and_then(|a| a.as_str()).is_some_and(|a| a == "read-write" || a == "write"))
+            .filter_map(|e| e.get("path").and_then(|p| p.as_str()))
+            .map(|path| {
+                let full = root.join(path);
+                full.canonicalize().unwrap_or(full)
+            })
+            .collect();
+        Permissions { ffi: p.get("ffi").and_then(|v| v.as_bool()).unwrap_or(false), writable }
+    }
+}
+
 /// The test files under `dir`, relative to the root, sorted.
 fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
     let mut out = vec![];
@@ -167,7 +197,8 @@ fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String> {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.to_string_lossy().ends_with(".t.sol") {
+            } else if p.extension().is_some_and(|e| e == "sol") && !p.to_string_lossy().ends_with(".s.sol") {
+                // forge runs test contracts from any Solidity file in the test folder, scripts aside.
                 let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
                 if !skip.iter().any(|s| rel.contains(s.as_str())) {
                     out.push(rel);
@@ -288,7 +319,12 @@ fn test_functions(s: &Session, i: usize, test_dir: &str) -> Vec<String> {
     if !a.file.starts_with(test_dir) {
         return vec![];
     }
-    a.methods.values().filter(|sig| sig.starts_with("test") || sig.starts_with("invariant")).cloned().collect()
+    // forge 1.x no longer runs `testFail*` functions as tests.
+    a.methods
+        .values()
+        .filter(|sig| (sig.starts_with("test") && !sig.starts_with("testFail")) || sig.starts_with("invariant") || sig.starts_with("statefulFuzz"))
+        .cloned()
+        .collect()
 }
 
 fn reason(run: &sol_debug::Run) -> String {
@@ -309,13 +345,29 @@ pub fn run(opts: &Options) -> Result<Report> {
     // solc uses one core, and its cost is spread over the test files (asyncswap/contracts: src/ alone 1.8 s, one test
     // file 4.7 s, all 125 about 70 s with the optimizer). So the files are split into one batch per core, balanced by
     // size; each worker compiles its batch (cached) and runs the test contracts its files define.
+    // Files that need different compilers can't share a solc run: one group per version, each with a share of the
+    // cores in proportion to its files.
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let batches = batches(&opts.root, &files, cores);
+    let groups = crate::versions::group(&opts.root, &project.remappings, &files, project.solc_version.as_deref());
+    let mut work: Vec<(formal_ast::solc::Project, Vec<String>)> = vec![];
+    let mut compile_errors: Vec<String> = vec![];
+    for (version, group) in &groups {
+        let Some(v) = version else {
+            compile_errors.push(format!("no installed solc satisfies the pragmas of: {}", group.join(", ")));
+            continue;
+        };
+        let mut p = project.clone();
+        p.solc_version = Some(v.clone());
+        let share = (cores * group.len()).div_ceil(files.len()).max(1);
+        for b in batches(&opts.root, group, share) {
+            work.push((p.clone(), b));
+        }
+    }
     let parts: Vec<Result<Part>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = batches
+        let handles: Vec<_> = work
             .iter()
-            .map(|batch| {
-                let (project, settings, test_dir) = (&project, &settings, &test_dir);
+            .map(|(project, batch)| {
+                let (settings, test_dir) = (&settings, &test_dir);
                 scope.spawn(move || worker(project, settings, batch, test_dir, opts))
             })
             .collect();
@@ -328,6 +380,7 @@ pub fn run(opts: &Options) -> Result<Report> {
     let (mut foreign_code, mut compile_time) = (0, Duration::ZERO);
     for part in parts {
         let p = part?;
+        compile_errors.extend(p.errors);
         tests.extend(p.tests);
         foreign_code += p.foreign;
         compile_time = compile_time.max(p.compile);
@@ -370,6 +423,7 @@ pub fn run(opts: &Options) -> Result<Report> {
         }).collect(),
         unsupported,
         foreign_code,
+        compile_errors,
         compile_time,
         run_time: total.saturating_sub(compile_time),
     })
@@ -377,6 +431,7 @@ pub fn run(opts: &Options) -> Result<Report> {
 
 /// What one worker found.
 struct Part {
+    errors: Vec<String>,
     tests: Vec<TestResult>,
     files: BTreeMap<String, FileCoverage>,
     bindings: Vec<Binding>,
@@ -398,13 +453,69 @@ fn batches(root: &Path, files: &[String], n: usize) -> Vec<Vec<String>> {
     out.into_iter().map(|(_, b)| b).filter(|b| !b.is_empty()).collect()
 }
 
+/// One batch; when it doesn't compile, each of its files on its own, so the failure is pinned to the file.
 fn worker(project: &formal_ast::solc::Project, settings: &Settings, batch: &[String], test_dir: &str, opts: &Options) -> Result<Part> {
     let started = Instant::now();
-    let output = compile_cached(project, batch, settings)?;
+    let units: Vec<(Vec<String>, serde_json::Value)> = match compile_cached(project, batch, settings) {
+        Ok(out) => vec![(batch.to_vec(), out)],
+        Err(_) if batch.len() > 1 => {
+            let mut units = vec![];
+            let mut errors = vec![];
+            for f in batch {
+                match compile_cached(project, std::slice::from_ref(f), settings) {
+                    Ok(out) => units.push((vec![f.clone()], out)),
+                    Err(e) => errors.push(format!("{f}: {:#}", e)),
+                }
+            }
+            if units.is_empty() {
+                return Ok(Part { errors, tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile: started.elapsed() });
+            }
+            let mut part = run_units(project, units, test_dir, opts, started)?;
+            part.errors.extend(errors);
+            return Ok(part);
+        }
+        Err(e) => {
+            return Ok(Part { errors: vec![format!("{}: {:#}", batch.join(", "), e)], tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile: started.elapsed() });
+        }
+    };
+    run_units(project, units, test_dir, opts, started)
+}
+
+/// Runs the tests of compiled units (each its files and solc output), and maps their coverage.
+fn run_units(project: &formal_ast::solc::Project, units: Vec<(Vec<String>, serde_json::Value)>, test_dir: &str, opts: &Options, started: Instant) -> Result<Part> {
     let compile = started.elapsed();
+    let mut all = Part { errors: vec![], tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile };
+    for (batch, output) in units {
+        let p = run_unit(project, &batch, &output, test_dir, opts)?;
+        all.tests.extend(p.tests);
+        all.foreign += p.foreign;
+        all.bindings.extend(p.bindings);
+        for (name, f) in p.files {
+            let into = all.files.entry(name).or_default();
+            for (line, n) in f.lines {
+                *into.lines.entry(line).or_insert(0) += n;
+            }
+            for (k, (j, fl)) in f.branches {
+                let b = into.branches.entry(k).or_insert((0, 0));
+                b.0 += j;
+                b.1 += fl;
+            }
+        }
+    }
+    Ok(all)
+}
+
+fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serde_json::Value, test_dir: &str, opts: &Options) -> Result<Part> {
+    let compile = Duration::ZERO;
+    let permissions = Permissions::from_foundry(&project.root);
     let new_session = || -> Result<Session> {
-        let mut s = Session::from_output(project.clone(), &output)?;
+        let mut s = Session::from_output(project.clone(), output)?;
         s.evm.inspector.coverage = Some(Coverage::default());
+        // What foundry.toml lets tests do, as forge allows it: ffi, and writes inside read-write fs_permissions.
+        if permissions.ffi {
+            s.evm.inspector.cheats.ffi_allow = vec!["*".into()];
+        }
+        s.evm.inspector.cheats.writable = permissions.writable.clone();
         // Libraries deployed and getCode's map built once, in the state every test contract starts from.
         s.serve_get_code()?;
         Ok(s)
@@ -438,7 +549,7 @@ fn worker(project: &formal_ast::solc::Project, settings: &Settings, batch: &[Str
     }
     let cov = s.evm.inspector.coverage.take().unwrap_or_default();
     let (files, bindings, foreign) = map_coverage(&s, &cov, &opts.include);
-    Ok(Part { tests: results, files, bindings, foreign, compile })
+    Ok(Part { errors: vec![], tests: results, files, bindings, foreign, compile })
 }
 
 /// One test contract: deployed and set up once, then each test from that state (each fuzz run too).
@@ -452,8 +563,13 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
         Ok(a) => a,
         Err(e) => {
             let e = e.to_string();
-            let status = if e.contains("createFork inside a test") { Status::Skipped("needs a fork (createFork)".into()) } else { Status::Fail(format!("setUp: {e}")) };
-            return fns.iter().map(|f| TestResult { contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
+            // A setUp that needs a fork: each test is skipped. Any other failure as forge reports it: one failed
+            // `setUp()`, and the tests not run.
+            if e.contains("createFork inside a test") {
+                let status = Status::Skipped("needs a fork (createFork)".into());
+                return fns.iter().map(|f| TestResult { contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
+            }
+            return vec![TestResult { contract: short.clone(), test: "setUp()".into(), status: Status::Fail(format!("setUp: {e}")), runs: 0, rejected: 0 }];
         }
     };
     let ready = s.snapshot();
@@ -464,7 +580,7 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
             tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped(why.into()), runs: 0, rejected: 0 });
             continue;
         }
-        if name.starts_with("invariant") {
+        if name.starts_with("invariant") || name.starts_with("statefulFuzz") {
             tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped("invariant campaign".into()), runs: 0, rejected: 0 });
             continue;
         }
@@ -502,6 +618,10 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
             if why.as_deref() == Some("sol-debug: vm.assume rejected the inputs") {
                 result.rejected += 1;
                 continue;
+            }
+            if let Some(w) = why.as_deref().filter(|w| w.starts_with("sol-debug: skip")) {
+                result.status = Status::Skipped(format!("vm.skip{}", w.trim_start_matches("sol-debug: skip")));
+                break;
             }
             if why.as_deref().is_some_and(|w| w.contains("createFork inside a test")) {
                 result.status = Status::Skipped("needs a fork (createFork)".into());
@@ -775,6 +895,13 @@ impl Report {
             let _ = writeln!(o, "\nunsupported cheatcodes, by failed tests:");
             for (sel, n) in &self.unsupported {
                 let _ = writeln!(o, "  {sel}  {n}×");
+            }
+        }
+        if !self.compile_errors.is_empty() {
+            let _ = writeln!(o, "\ndidn't compile ({}):", self.compile_errors.len());
+            for e in &self.compile_errors {
+                let first: String = e.lines().take(3).collect::<Vec<_>>().join(" | ");
+                let _ = writeln!(o, "  {}", first.chars().take(300).collect::<String>());
             }
         }
         let mut skipped: BTreeMap<&str, Vec<String>> = BTreeMap::new();

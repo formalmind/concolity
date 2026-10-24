@@ -7,3 +7,4 @@ pub mod coverage;
 pub mod expr;
 pub mod shadow;
 pub mod smt;
+pub mod versions;
