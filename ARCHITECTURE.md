@@ -220,6 +220,7 @@ src/
   shadow.rs     5   the Inspector
   smt.rs        6
   tree.rs       7
+  evm/          the opcode model (EVM-MODEL.md), used by shadow.rs
   oracle.rs     8
   report.rs     9
   source.rs    10   CodeMap, AST names, harness (behind the `source` feature)
@@ -232,6 +233,8 @@ source layer and for compiling projects. The solver is an external binary.
 
 ## First cut
 
+0. **The EVM model** ([EVM-MODEL.md](EVM-MODEL.md)): every opcode's symbolic semantics, with the self-check
+   against revm and per-opcode solver tests. Everything else stands on it.
 1. `expr`, `smt`: terms, SMT-LIB, z3, tested on hand-built terms.
 2. `code`, `chain`, `shadow`: Triangle's **runtime bytecode** etched, one run with symbolic calldata, its path printed
    by pc.
