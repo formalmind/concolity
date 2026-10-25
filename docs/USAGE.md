@@ -96,7 +96,14 @@ The local swarm's agents have the same capabilities as tools, and they drive the
 | `coverage` | uncovered lines and untaken sides per file, failing tests, missing bytecode |
 | `explore` | solved / unsat / unknown sides by line, and findings |
 
+| `tag` | mark a line with a suspicion, assumption, invariant or todo (in `.formal/findings.sarif`) |
+
 When an agent opens its debugger, the Swarm page shows it, read-only, moving as the agent moves.
+
+**The hunter.** On the Bugs page, *Hunt for bugs* (with an optional focus such as `Router.swap`) queues a hunt. The
+hunter runs coverage, then explore on the fuzz tests that reach the security-relevant gaps, debugs each finding and
+solved side, and for each bug it can prove writes a Foundry PoC and files it with `report_bug`. Bugs land on the Bugs
+page and, with tags, in `.formal/findings.sarif`, which solidity-language-server shows on the line.
 
 ```mermaid
 flowchart LR
