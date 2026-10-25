@@ -15,7 +15,7 @@ Three parts:
 |---|---|---|---|
 | 2026-10-24 | `AsyncMatching._matchAmounts` | Two guards are dead by arithmetic (`assetAmount > sell.amountIn`, `quoteAmount > buy.amountIn`: a floor then a ceil can't exceed the input), gas on every match. The other four guard the `_crosses` precondition. All six unreachable for every escrowable amount (z3, case-studies/async-swap). | proved; dead pair is a gas note |
 | 2026-10-24 | `_crosses` / `TickPrice` | The whole match-safety argument rests on "distinct tick keys imply a strict exact cross". Unchecked: `TickPrice.floorTick` through `TickMath.getTickAtSqrtPrice` (assembly) and the numeraire flip in `_priceKey`. | open: next concolic target |
-| 2026-10-24 | `AsyncSwap.matchBook` / `PENDING_MATCH_ID_SLOT` | The pending-order id is in **transient** storage, so it lives for the whole transaction, not the unlock. An order placed through a path other than the Router (a direct `PoolManager.swap` with hook data) leaves it set: every later `matchBook` on that pool in the same transaction returns 0 while that order rests. forge clears transient storage between a test's top-level calls, so the test suite can't see this. | to verify: severity is likely low (one transaction), but batch/multicall integrators would see silent no-matches. **Proposed fix (Meek):** the hook trusts only the Router as caller, fixed at deployment, so no other path can set the pending id |
+| 2026-10-24 | `AsyncSwap.matchBook` / `PENDING_MATCH_ID_SLOT` | The pending-order id is in **transient** storage, so it lives for the whole transaction, not the unlock. An order placed through a path other than the Router (a direct `PoolManager.swap` with hook data) leaves it set: every later `matchBook` on that pool in the same transaction returns 0 while that order rests. forge clears transient storage between a test's top-level calls, so the test suite can't see this. | to verify: severity is likely low (one transaction), but batch/multicall integrators would see silent no-matches. **Fixed** on asyncswap/contracts `claude/hook-router-only` (4609849): the hook trusts only the Router as swap caller (immutable, set at deployment: the Router is deployed first at the owner's next CREATE address and points at the hook's mined address); any other sender reverts `NotTrustedRouter()`. 869/869 tests. The Lean model of `beforeSwap` (`AsyncSwapBeforeSwap.lean`, `SpecCoreAsyncSwap.lean`) needs the same guard |
 | 2026-10-24 | test suite vs real transactions | Same root: forge runs each top-level test call as its own transaction. Any Async Swap property that depends on transient state (locks, pending ids, PoolManager deltas) is only tested across transactions, never within one. A same-transaction sequence harness (several hook/router calls in one tx) would test what production batches do. | open: harness to write |
 
 ### Explore run, Async Swap at 3295d4d (2026-10-24)
@@ -31,6 +31,10 @@ don't reach the condition, 1,272 not reached by any fuzz test. 0 findings, 0 mod
 - **The real gap is reach:** 1,272 sides are never reached by a fuzz test's arguments. Unit tests reach them with
   fixed values, and unit tests have no symbolic inputs. Next: make storage and cheatcode-set values symbolic (a
   harness mode), and solve symbolic mapping slots (198k SLOAD pins in this run).
+
+Lesson from the fix: four test files exercised exactly the bad path (a custom executor opening an order and
+calling `matchBook` mid-unlock, paying bids, filling). Tests that drive a path production should forbid are a lead
+in themselves: grep a suite for callers the protocol doesn't intend.
 
 ## 2. Bug classes and the bytecode oracles that catch them
 
