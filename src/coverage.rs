@@ -576,6 +576,11 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
                 let status = Status::Skipped("needs a fork (createFork)".into());
                 return fns.iter().map(|f| TestResult { contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
             }
+            // `vm.skip(true)` in setUp: forge reports one skipped `setUp()`.
+            if let Some(at) = e.find("sol-debug: skip") {
+                let why = format!("vm.skip{}", e[at..].trim_start_matches("sol-debug: skip"));
+                return vec![TestResult { contract: short.clone(), test: "setUp()".into(), status: Status::Skipped(why), runs: 0, rejected: 0 }];
+            }
             return vec![TestResult { contract: short.clone(), test: "setUp()".into(), status: Status::Fail(format!("setUp: {e}")), runs: 0, rejected: 0 }];
         }
     };

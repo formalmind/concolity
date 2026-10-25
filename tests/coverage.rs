@@ -12,7 +12,14 @@ fn triangle_suite_matches_forge_lines_and_flags_the_missing_callee() {
         Err(e) if e.to_string().contains("isn't installed") => return eprintln!("skipped: {e}"),
         r => r.unwrap(),
     };
-    assert!(report.tests.iter().all(|t| t.status == Status::Pass), "{}", report.summary(false));
+    // A setUp that calls vm.skip(true): one skipped `setUp()`, as forge reports it.
+    let skipped: Vec<_> = report.tests.iter().filter(|t| t.contract == "SkipSetUpTest").collect();
+    assert!(
+        skipped.len() == 1 && skipped[0].test == "setUp()" && matches!(skipped[0].status, Status::Skipped(_)),
+        "{}",
+        report.summary(false)
+    );
+    assert!(report.tests.iter().filter(|t| t.contract != "SkipSetUpTest").all(|t| t.status == Status::Pass), "{}", report.summary(false));
 
     let f = &report.files["src/Triangle.sol"];
     let lines: Vec<usize> = f.lines.keys().copied().collect();
