@@ -44,6 +44,10 @@ enum Command {
         /// Write SARIF here (merged with the file's other runs), e.g. .formal/findings.sarif.
         #[arg(long)]
         sarif: Option<PathBuf>,
+        /// Only the branches at this place (src/AsyncSwap.sol:446): how often each side ran, from the cache when the
+        /// code hasn't changed.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// The explore loop: untaken JUMPI sides as targets, fuzz tests as harnesses, z3 to solve for them.
     Explore {
@@ -58,6 +62,9 @@ enum Command {
         /// Only fuzz tests whose Contract::name contains this.
         #[arg(long)]
         only: Option<String>,
+        /// Only the untaken sides at this place: src/AsyncSwap.sol:446.
+        #[arg(long)]
+        target: Option<String>,
         #[arg(long, default_value_t = 12)]
         runs_per_test: usize,
         #[arg(long, default_value_t = 6)]
@@ -105,8 +112,25 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json, sarif } => {
+        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json, sarif, at } => {
             let opts = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs, fast };
+            if let Some(at) = at {
+                let (f, l) = at.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("--at is file:line"))?;
+                let l: usize = l.parse()?;
+                let here: Vec<_> = concolity::coverage::branches(&opts)?.into_iter().filter(|(file, line, ..)| file.ends_with(f) && *line == l).collect();
+                if here.is_empty() {
+                    println!("{at}: no branch (JUMPI) on that line in the included files");
+                }
+                for (file, line, code, pc, j, fl) in &here {
+                    let side = |n: u64| if n == 0 { "never".to_string() } else { format!("{n}x") };
+                    if json {
+                        println!("{}", serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl }));
+                    } else {
+                        println!("{file}:{line}  {code} pc {pc}  jump {}  fall-through {}", side(*j), side(*fl));
+                    }
+                }
+                return Ok(());
+            }
             let report = concolity::coverage::run(&opts)?;
             if let Some(path) = sarif {
                 concolity::sarif::write(&path, concolity::sarif::coverage_run(&root, &report))?;
@@ -130,9 +154,16 @@ fn main() -> Result<()> {
                 eprintln!("lcov: {}", path.display());
             }
         }
-        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds, json, sarif } => {
+        Command::Explore { root, test_dir, skip, include, only, target, runs_per_test, flips_per_run, timeout_ms, seeds, json, sarif } => {
+            let target = match target {
+                Some(t) => {
+                    let (f, l) = t.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("--target is file:line"))?;
+                    Some((f.to_string(), l.parse::<usize>()?))
+                }
+                None => None,
+            };
             let coverage = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs: 32, fast: false };
-            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only };
+            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only, target };
             let report = concolity::explore::run(&opts)?;
             if let Some(path) = sarif {
                 concolity::sarif::write(&path, concolity::sarif::explore_run(&root, &report))?;

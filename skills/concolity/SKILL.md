@@ -15,13 +15,18 @@ Always pass the project root (where foundry.toml is). Paths in answers are relat
 
 | You want | Run |
 |---|---|
+| Whether the suite takes both sides of a line's branch (fast, cached) | `concolity coverage <root> --at src/X.sol:123` |
 | What the suite never runs | `concolity coverage <root>` |
-| Inputs that reach an untaken branch, or proof it's unreachable | `concolity explore <root> --only <Contract or test>` |
+| Inputs that reach an untaken branch, or proof it's unreachable | `concolity explore <root> --target src/X.sol:123` or `--only <Contract or test>` |
 | Why one test fails or what it did | `concolity debug <root> <file> Contract::test <query>` |
 | Whether the runner agrees with forge | `forge test --json > forge.json && concolity coverage <root> --against-forge forge.json` |
 
 Add `--json` to `coverage` and `explore` when you'll parse the result. `debug` always answers JSON (`lines --text` for
 a human-readable trace).
+
+Coverage's branch map is cached in `~/.cache/formalmind/coverage/` by commit, working-tree diff, untracked files and
+options: the first run of a big suite takes a minute or more, every later `coverage --at` or `explore` on unchanged code
+starts at once. Ask narrow questions; don't rerun the whole suite to check one line.
 
 ## coverage
 
@@ -44,6 +49,7 @@ Read it in this order:
 ## explore
 
 ```sh
+concolity explore <root> --target src/X.sol:123  # only the untaken sides on that line (errors if the suite takes both)
 concolity explore <root> --only <substring>      # fuzz tests whose Contract::name contains it are the harnesses
 concolity explore <root> --timeout-ms 20000      # deep 256-bit arithmetic needs longer than the 1 s default
 concolity explore <root> --runs-per-test 24 --flips-per-run 8   # search harder
@@ -51,7 +57,9 @@ concolity explore <root> --json
 CONCOLITY_DEBUG=1 concolity explore <root> --only <x>          # each run's decisions and pinned values, on stderr
 ```
 
-A whole large suite takes minutes; start with `--only`. Outcomes per untaken side, by `file:line`:
+A whole large suite takes minutes; start with `--target` or `--only`. The listing shows only what was learned; the
+sides no harness ran and the ones its inputs don't decide are counted on one line (`--json` lists them). Outcomes per
+untaken side, by `file:line`:
 - **solved** `by Test::fn [args]`: those inputs take the side. Replay them with `debug --arg`.
 - **findings**: solved inputs that make a test fail. Treat as a bug until the debugger says otherwise.
 - **unsat**: no input to that test reaches the side. A dead guard if unsat from every harness; otherwise the harness

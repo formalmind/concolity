@@ -118,6 +118,54 @@ pub struct Report {
     pub run_time: Duration,
 }
 
+/// Every JUMPI of the included files with how often each side ran: (file, line, artifact, pc, jumped, fell through).
+pub type Branches = Vec<(String, usize, String, usize, u64, u64)>;
+
+fn fnv64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// What a suite's result depends on: the commit, every change to tracked files and the untracked files (by size and
+/// time). None outside git.
+pub fn tree_key(root: &Path) -> Option<String> {
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(root).args(args).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
+    let head = git(&["rev-parse", "HEAD"])?;
+    // Submodules (lib/, dependencies/) are left out: they're pinned by the commit, and a broken one shouldn't stop the cache.
+    let diff = git(&["diff", "HEAD", "--binary", "--ignore-submodules=all"])?;
+    let untracked = git(&["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut stamp = Vec::new();
+    for f in untracked.split(|b| *b == 0).filter(|f| !f.is_empty()) {
+        if let Ok(m) = std::fs::metadata(root.join(String::from_utf8_lossy(f).as_ref())) {
+            stamp.extend_from_slice(f);
+            stamp.extend_from_slice(&m.len().to_le_bytes());
+            if let Ok(t) = m.modified() {
+                stamp.extend_from_slice(&t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().to_le_bytes());
+            }
+        }
+    }
+    Some(format!("{:016x}{:016x}{:016x}", fnv64(&head), fnv64(&diff), fnv64(&stamp)))
+}
+
+/// The suite's branch map, from the cache (~/.cache/formalmind/coverage) when the code and the options haven't changed
+/// since a run, so explore doesn't run the whole suite again for every question.
+pub fn branches(opts: &Options) -> Result<Branches> {
+    let key = tree_key(&opts.root).map(|t| format!("{t}-{:016x}", fnv64(format!("{}|{:?}|{:?}|{}|{}", opts.test_dir, opts.skip, opts.include, opts.fuzz_runs, opts.fast).as_bytes())));
+    // The project by its real path: `.` and /abs/path are the same project.
+    let real = std::fs::canonicalize(&opts.root).unwrap_or_else(|_| opts.root.clone());
+    let file = key.and_then(|k| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/formalmind/coverage").join(format!("{:016x}", fnv64(real.to_string_lossy().as_bytes()))).join(format!("{k}.json"))));
+    if let Some(hit) = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok()) {
+        eprintln!("coverage: cached (the code hasn't changed)");
+        return Ok(hit);
+    }
+    let report = run(opts)?;
+    let out: Branches = report.files.iter().flat_map(|(file, f)| f.branches.iter().map(move |((line, code, pc), (j, fl))| (file.clone(), *line, code.clone(), *pc, *j, *fl))).collect();
+    if let Some(f) = &file {
+        let _ = std::fs::create_dir_all(f.parent().unwrap());
+        let _ = std::fs::write(f, serde_json::to_string(&out).unwrap_or_default());
+    }
+    Ok(out)
+}
+
 /// forge's test filters from foundry.toml's default profile (`match_test`, `no_match_test`, `match_contract`,
 /// `no_match_contract`): regexes searched in the test's or the contract's name, as forge applies them.
 #[derive(Default)]

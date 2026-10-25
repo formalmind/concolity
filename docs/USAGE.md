@@ -42,6 +42,7 @@ concolity coverage . --bindings                            # every call site and
 concolity coverage . --fast                                # optimizer off, like forge coverage (not the shipped code)
 concolity coverage . --json > coverage.json                # everything, for agents and tools
 concolity coverage . --sarif .formal/findings.sarif       # failing tests, missing bytecode, untaken sides, for editors
+concolity coverage . --at src/libraries/AsyncFiller.sol:271   # each side's hit count on one line (cached: instant)
 forge test --json > forge.json && concolity coverage . --against-forge forge.json   # where the runner and forge disagree
 ```
 
@@ -52,6 +53,7 @@ nothing past that call), then the files with untaken sides.
 
 ```sh
 concolity explore .                                        # every untaken side of src/, every fuzz test as a harness
+concolity explore . --target src/AsyncSwap.sol:446         # only the untaken sides on that line
 concolity explore . --only ReduceMatchedOrders             # only fuzz tests whose Contract::name contains this
 concolity explore . --timeout-ms 20000                     # a deep equation (256-bit multiplication) needs longer
 concolity explore . --json                                 # every side with its outcome, and the findings

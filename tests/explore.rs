@@ -8,7 +8,7 @@ use std::path::PathBuf;
 fn solves_the_magic_value_and_reports_the_overflow() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/triangle-project");
     let coverage = concolity::coverage::Options { root, test_dir: "test".into(), skip: vec!["Failing".into()], include: vec!["src/".into()], fuzz_runs: 32, fast: false };
-    let opts = Options { coverage, runs_per_test: 12, flips_per_run: 6, timeout_ms: 2000, seeds: 2, only: None };
+    let opts = Options { coverage, runs_per_test: 12, flips_per_run: 6, timeout_ms: 2000, seeds: 2, only: None, target: None };
     let report = match run(&opts) {
         Err(e) if e.to_string().contains("isn't installed") => return eprintln!("skipped: {e}"),
         r => r.unwrap(),

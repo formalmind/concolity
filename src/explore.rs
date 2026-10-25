@@ -38,6 +38,8 @@ pub struct Options {
     pub seeds: usize,
     /// Only fuzz tests whose `Contract::name` contains this.
     pub only: Option<String>,
+    /// Only the branch sides at this place (`src/AsyncSwap.sol:446`), instead of every untaken side.
+    pub target: Option<(String, usize)>,
 }
 
 /// A target: one side of one JUMPI, by its line.
@@ -246,27 +248,39 @@ fn with_model(shadow: &Shadow, data: &[u8], model: &[U256]) -> Vec<u8> {
 
 pub fn run(opts: &Options) -> Result<Report> {
     let started = Instant::now();
-    // The targets: every untaken side in the included files.
-    let cov = coverage::run(&opts.coverage)?;
+    // The targets: every untaken side in the included files (or at the one place asked about).
+    let cov = coverage::branches(&opts.coverage)?;
     let mut targets: HashMap<(String, usize, bool), Side> = HashMap::new();
     let mut reached: HashSet<(String, usize)> = HashSet::new();
-    for (file, f) in &cov.files {
-        for ((line, code, pc), (j, fl)) in &f.branches {
-            if *j > 0 || *fl > 0 {
-                reached.insert((code.clone(), *pc));
-            }
-            for (taken, jumped) in [(*j, true), (*fl, false)] {
-                if taken == 0 {
-                    targets.insert((code.clone(), *pc, jumped), Side { file: file.clone(), line: *line, code: code.clone(), pc: *pc, jumped });
-                }
+    for (file, line, code, pc, j, fl) in &cov {
+        if *j > 0 || *fl > 0 {
+            reached.insert((code.clone(), *pc));
+        }
+        if opts.target.as_ref().is_some_and(|(f, l)| !(file.ends_with(f.as_str()) && l == line)) {
+            continue;
+        }
+        for (taken, jumped) in [(*j, true), (*fl, false)] {
+            if taken == 0 {
+                targets.insert((code.clone(), *pc, jumped), Side { file: file.clone(), line: *line, code: code.clone(), pc: *pc, jumped });
             }
         }
+    }
+    if let (Some((f, l)), true) = (&opts.target, targets.is_empty()) {
+        anyhow::bail!("{f}:{l}: no branch side there that the suite leaves untaken");
     }
     let wanted: Arc<HashSet<(String, usize, bool)>> = Arc::new(targets.keys().cloned().collect());
 
     // The same compile groups and batches as coverage.
     let root = &opts.coverage.root;
-    let files = coverage::test_files(root, &opts.coverage.test_dir, &opts.coverage.skip);
+    let mut files = coverage::test_files(root, &opts.coverage.test_dir, &opts.coverage.skip);
+    // With --only, compile just the test files that can hold those harnesses (their source names the contract).
+    if let Some(only) = &opts.only {
+        let contract = only.split("::").next().unwrap_or(only);
+        let picked: Vec<String> = files.iter().filter(|f| std::fs::read_to_string(root.join(f)).is_ok_and(|t| t.contains(contract))).cloned().collect();
+        if !picked.is_empty() {
+            files = picked;
+        }
+    }
     let mut settings = sol_debug::solc::Settings::from_foundry(root);
     if opts.coverage.fast {
         settings.optimizer = None;
@@ -645,7 +659,20 @@ impl Report {
         let _ = writeln!(o, "model self-check mismatches: {} {:?}; stale shadows dropped: {}", self.mismatches, self.mismatch_ops, self.stale);
         let _ = writeln!(o, "values pinned, by opcode: {:?}\n", self.pinned_ops);
         let mut last = String::new();
+        let (mut unreached, mut uninfluenced) = (0, 0);
         for (side, out) in &self.targets {
+            // Only what was learned; the rest is counted below (--json lists every side).
+            match out {
+                Outcome::NotReached => {
+                    unreached += 1;
+                    continue;
+                }
+                Outcome::InputsDontReach => {
+                    uninfluenced += 1;
+                    continue;
+                }
+                _ => {}
+            }
             if side.file != last {
                 let _ = writeln!(o, "{}", side.file);
                 last = side.file.clone();
@@ -662,6 +689,9 @@ impl Report {
                 Outcome::NotReached => "not reached".into(),
             };
             let _ = writeln!(o, "  :{:<5} {:<24} pc {:<6} {:<4}  {what}", side.line, side.code, side.pc, if side.jumped { "jump" } else { "fall" });
+        }
+        if unreached + uninfluenced > 0 {
+            let _ = writeln!(o, "\n(not listed: {unreached} sides no harness ran, {uninfluenced} where the harnesses' inputs don't decide the branch; --json lists them)");
         }
         if !self.findings.is_empty() {
             let _ = writeln!(o, "\nfindings: solved inputs that make a test fail");
