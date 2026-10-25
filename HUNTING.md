@@ -62,6 +62,36 @@ Most of a hunt is reading and arguing from the code. The tools earn their place 
 `--target`, a debug query) and as PoC runners. For `concolity mcp` that means: narrow tools, cached, with background
 tasks for the slow ones; not a whole-report tool. The method is the skill `bug-hunter:hunt` in formalmind/skills.
 
+### Deeper: the matching engine and the radix trees (2026-10-25)
+
+| # | Hypothesis | Verdict | How it was settled |
+|---|---|---|---|
+| H5 | a crossing pair whose amounts round to 0 makes `matchBook` break and block the pairs behind it | ruled out | amounts are taken at the maker's limit, and a crossing pair is worth at least the counter-order's limit, so at least the pool's $10 minimum (the case study's z3 result on `_matchAmounts`' guards) |
+| H6 | a worse exact price in a lower tick level matches first | ruled out | tick levels are monotone in exact price (saturated ends included) and `bestAtPrice` takes the exact best inside a level |
+| H7 | `_bookPair` stops while some other pair crosses | ruled out | it compares the two extrema: if they don't cross, nothing does |
+| H8 | a recycled radix node keeps a stale `exactBounds` summary, or a removal leaves an ancestor stale | ruled out | the new leaf is written first and its parent always recomputed (`forceFirst`); a removal repairs from the grandparent; the early stop is sound (unchanged summary ⇒ unchanged ancestors); id 0 is never written |
+| H9 | `_reduceAfterMatch` re-keys an order with the new fee before removing the old key | ruled out | the new amounts and fee are written first, but `_remove` uses the stored `priorityKey`, which only `_append` changes |
+| H10 | exact priority (the AuditAgent-2 fix) picks the wrong order inside a level | ruled out by testing | a new invariant (best order = best exact price, then bid, then age, by linear scan) held for 256 runs × 200 calls, with half the submissions packed into about one tick (5 orders sharing a level at a run's end) |
+
+Gaps this turned up (in the suite, not the contracts):
+- **G1, the invariant didn't see the fix.** `invariant_bestPricesAgreeWithLinearScan` compares tick levels only; a wrong
+  pick inside a level passes it. The exact-priority invariant above closes that (written in a scratch copy,
+  `test/HuntExactPriority.t.sol`; offered to the repository).
+- **G2, the campaign didn't reach the case.** The handler's prices are uniform over $1,000–$4,000, about 14,000 tick
+  levels for a few dozen orders: same-level books almost never happen, so the fix was barely exercised even by a
+  correct invariant. A second handler that packs submissions around one price makes them happen.
+
+What was missing in the tools:
+- **concolity has no invariant or sequence runner.** Matching-engine bugs live in sequences (submit, partial fill,
+  reprice, cancel, match); explore works on one call's arguments. The hunt used forge's invariant campaigns, run in
+  the background (256 × 200 in about 45 s per suite). Next for concolity: run invariant campaigns itself (with
+  coverage of what they reach), and explore sequences, not only arguments.
+- **No measure of whether a campaign reaches a state.** Checking that same-level books occurred took an ad-hoc counter
+  in `afterInvariant`. A tool should report how often a predicate held across a campaign (state coverage), next to
+  line and branch coverage.
+- **The highest-leverage step was reading the invariants against the fix**, not running a tool: "does any invariant
+  see what this change changed, and does the campaign reach it?" That's now in the hunt skill.
+
 ## 2. Bug classes and the bytecode oracles that catch them
 
 Each oracle runs on a concrete execution (a test, a fuzz input, a concolic solution), so a hit is a real run with
