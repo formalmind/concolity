@@ -78,6 +78,8 @@ pub struct Finding {
     /// The harness's test file.
     pub file: String,
     pub test: String,
+    /// The inputs reduced: each argument as simple as it can be while the test fails with the same reason.
+    pub reduced: String,
     pub args: String,
     pub reason: String,
 }
@@ -164,6 +166,22 @@ fn show_args(sig: &str, data: &[u8]) -> String {
         Some(DynSolValue::Tuple(v)) => v.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" "),
         _ => format!("0x{}", revm::primitives::hex::encode(data)),
     }
+}
+
+/// A finding's inputs, reduced (`reduce.rs`): the test must keep failing with the same decoded reason.
+fn reduce_finding(s: &mut Session, ready: &sol_debug::session::Snapshot, address: Address, selector: &[u8], types: &DynSolType, data: &[u8], reason: &str) -> String {
+    let Ok(DynSolValue::Tuple(args)) = types.abi_decode_params(data.get(4..).unwrap_or(&[])) else { return String::new() };
+    let mut fails = |a: &[DynSolValue]| {
+        let mut d = selector.to_vec();
+        d.extend(DynSolValue::Tuple(a.to_vec()).abi_encode_params());
+        s.restore(ready);
+        match s.transact_quiet(sol_debug::SENDER, TxKind::Call(address), Bytes::from(d), U256::ZERO) {
+            Ok(run) => !run.success && sol_debug::agent::decode_revert(s, &run.output) == reason,
+            Err(_) => false,
+        }
+    };
+    let (out, _) = crate::reduce::reduce(args, 3000, &mut fails);
+    out.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" ")
 }
 
 /// Whether the arguments decode as the parameters and encode back to the same bytes.
@@ -474,7 +492,9 @@ fn explore_test(
         if let Some(reason) = &failed {
             if runs > 1 + opts.seeds {
                 // An input the solver produced makes the test fail: the test's claim doesn't hold for it.
-                part.findings.push(Finding { file: String::new(), test: test.to_string(), args: args.clone(), reason: reason.clone() });
+                let reduced = reduce_finding(s, ready, address, &selector, &types, &data, reason);
+                before = taken(s, labels, wanted);
+                part.findings.push(Finding { file: String::new(), test: test.to_string(), args: args.clone(), reduced, reason: reason.clone() });
             }
         }
 
@@ -591,7 +611,7 @@ impl Report {
                 v
             })
             .collect();
-        let findings: Vec<_> = self.findings.iter().map(|f| json!({ "test": f.test, "args": f.args, "reason": f.reason })).collect();
+        let findings: Vec<_> = self.findings.iter().map(|f| json!({ "test": f.test, "args": f.args, "reduced": f.reduced, "reason": f.reason })).collect();
         json!({
             "targets": targets,
             "findings": findings,
@@ -646,7 +666,11 @@ impl Report {
         if !self.findings.is_empty() {
             let _ = writeln!(o, "\nfindings: solved inputs that make a test fail");
             for f in &self.findings {
-                let _ = writeln!(o, "  {}  [{}]  {}", f.test, f.args, f.reason);
+                let _ = writeln!(o, "  {}  {}", f.test, f.reason);
+                let _ = writeln!(o, "    found    [{}]", f.args);
+                if !f.reduced.is_empty() && f.reduced != f.args {
+                    let _ = writeln!(o, "    reduced  [{}]", f.reduced);
+                }
             }
         }
         o

@@ -6,6 +6,7 @@ pub mod chain;
 pub mod coverage;
 pub mod explore;
 pub mod expr;
+pub mod reduce;
 pub mod sarif;
 pub mod shadow;
 pub mod smt;

@@ -164,6 +164,8 @@ The measures say when the spec is strong enough:
 1. **solc coverage** (1): the slow-coverage pain today, and the feedback signal for 3, 4, 5 and 16. *Built:*
    `concolity coverage`, with bindings and missing bytecode first; the agent debugger (`concolity debug`) came with it.
 2. **concolity's explore loop** (2): the trace tree, so it explores on its own. Then reduction (12) for its findings.
+   *Built:* the explore loop, and reduction of each finding's inputs over ABI values (`src/reduce.rs`: numbers to 0,
+   then bisection to the boundary, then bit clearing; lists by ddmin; booleans and addresses to their simplest).
 3. **Mutation-based and greybox fuzzing** (3, 4), on bytecode, sharing 1's coverage. Unverified contracts on a
    fork.
 4. **Grammar fuzzing of functions** (6), with the hybrid: greybox runs until coverage plateaus, then concolity

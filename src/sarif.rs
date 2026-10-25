@@ -109,8 +109,8 @@ pub fn explore_run(root: &Path, r: &explore::Report) -> Value {
             "concolity/test-fails-on-solved-input",
             &file,
             line,
-            format!("{} fails with {} on inputs the solver found: [{}]", f.test, f.reason, f.args),
-            json!({ "test": f.test, "inputs": f.args, "reason": f.reason, "harness_file": f.file }),
+            format!("{} fails with {} on inputs the solver found, reduced: [{}]", f.test, f.reason, if f.reduced.is_empty() { &f.args } else { &f.reduced }),
+            json!({ "test": f.test, "inputs": f.args, "reduced": f.reduced, "reason": f.reason, "harness_file": f.file }),
         ));
     }
     for (side, o) in &r.targets {
