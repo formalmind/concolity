@@ -75,8 +75,9 @@ tasks for the slow ones; not a whole-report tool. The method is the skill `bug-h
 
 Gaps this turned up (in the suite, not the contracts):
 - **G1, the invariant didn't see the fix.** `invariant_bestPricesAgreeWithLinearScan` compares tick levels only; a wrong
-  pick inside a level passes it. The exact-priority invariant above closes that (written in a scratch copy,
-  `test/HuntExactPriority.t.sol`; offered to the repository).
+  pick inside a level passes it. The exact-priority invariant above closes that (kept in
+  [case-studies/async-swap/HuntExactPriority.t.sol](case-studies/async-swap/HuntExactPriority.t.sol): drop it into the
+  repository's `test/` next to `MatchingInvariant.t.sol`).
 - **G2, the campaign didn't reach the case.** The handler's prices are uniform over $1,000–$4,000, about 14,000 tick
   levels for a few dozen orders: same-level books almost never happen, so the fix was barely exercised even by a
   correct invariant. A second handler that packs submissions around one price makes them happen.
