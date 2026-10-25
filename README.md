@@ -14,7 +14,13 @@ Branches are reported in Solidity, by line and AST node, through
 the debugger and becomes a Foundry test. It also runs on Huff and on bare bytecode, where it reports by pc.
 
 The design follows the `ConcolicTracer` of [The Fuzzing Book](https://www.fuzzingbook.org/html/ConcolicFuzzer.html),
-moved from Python values into the EVM interpreter. It works on bytecode; source maps and the AST only add names. Read [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [ROADMAP.md](ROADMAP.md) (the rest of the toolkit), [COMMON_SOLIDITY_BUG.md](COMMON_SOLIDITY_BUG.md) (the bug classes, and which tool catches each), [HUNTING.md](HUNTING.md) (the hunting log: leads, bytecode oracles, fidelity lessons), and the first case study: [Async Swap's unreachable guards](case-studies/async-swap/).
+moved from Python values into the EVM interpreter. It works on bytecode; source maps and the AST only add names.
+
+**Start with [docs/USAGE.md](docs/USAGE.md)** (every command, what each outcome means, what it catches today). The
+Claude Code skill is [skills/concolity/SKILL.md](skills/concolity/SKILL.md); findings in the editor through
+solidity-language-server are designed in [docs/LSP.md](docs/LSP.md).
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [ROADMAP.md](ROADMAP.md) (the rest of the toolkit), [COMMON_SOLIDITY_BUG.md](COMMON_SOLIDITY_BUG.md) (the bug classes, and which tool catches each), [HUNTING.md](HUNTING.md) (the hunting log: leads, bytecode oracles, fidelity lessons), and the first case study: [Async Swap's unreachable guards](case-studies/async-swap/).
 
 **Status:** the EVM model runs ([EVM-MODEL.md](EVM-MODEL.md#status-2026-10-24)): revm executes, every opcode's
 result gets its symbolic term, every step is checked against revm, and z3 solves flipped branches. On the book's
