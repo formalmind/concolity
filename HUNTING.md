@@ -36,6 +36,32 @@ Lesson from the fix: four test files exercised exactly the bad path (a custom ex
 calling `matchBook` mid-unlock, paying bids, filling). Tests that drive a path production should forbid are a lead
 in themselves: grep a suite for callers the protocol doesn't intend.
 
+### Dogfooding: an agent hunting Async Swap with the CLI (2026-10-25, 5998724)
+
+The point: use the tools as the Bug Hunter would, before building more around them. Method: read the newest code
+(the AuditAgent-2 fixes and the batched claim transfers), write hypotheses, settle each with the cheapest evidence.
+
+| # | Hypothesis | Verdict | How it was settled |
+|---|---|---|---|
+| H1 | `ClaimTransfers.Batch` (33 credits) overflows in one `matchBook` | ruled out | counted: ≤ 5 distinct (currency, recipient) keys per pair, ≤ 8 pairs, so ≤ 16 makers × 2 + the vault = 33; self-credits and pool fills bypass the batch |
+| H2 | deferred payouts (`flush`) read before they're applied | ruled out | nothing between credit and flush reads those claim balances |
+| H3 | an authorized executor can burn a maker's nonces (`useNonce`), invalidating their pending signatures | informational | real, but within the trust model: an executor can already cancel the maker's orders, which is worse |
+| H4 | the repriced bid floor (`updatePrice`, AsyncFiller.sol:271) rounds or caps wrongly | ruled out | `minPriorityFee` is min(0.1%, $0.10) as documented; floor rounding only below the $10 pool minimum; `coverage --at` shows both sides taken (310 and 455 times) |
+
+What the tools got wrong for an agent, and what changed (concolity bda31da):
+
+| Friction | Fix |
+|---|---|
+| `explore --only X` ran the whole suite's coverage every time (≈ 60 s on Async Swap) | coverage's branch map is cached by commit, diff (ignoring submodules: a copied or broken submodule broke the key), untracked files and options, the project by its real path; `--only` compiles only test files naming the harness. 59 s → 28 s, and 0.08 s for a cached question |
+| No way to ask "is this line's branch exercised?" without a whole report | `coverage --at file:line`: each side's hit count |
+| No way to aim explore at one line | `explore --target file:line`; it answers at once if the suite takes both sides |
+| The report listed 1,569 sides, nearly all "not reached" | the listing shows only what was learned; the rest is counted on one line (`--json` keeps all) |
+| explore learned nothing about `updatePrice`: its branches depend on stored order state, not the fuzz arguments ("inputs don't reach") | open: harnesses that make stored state symbolic (or a sequence harness), and symbolic storage keys |
+
+Most of a hunt is reading and arguing from the code. The tools earn their place as fast, narrow questions (`--at`,
+`--target`, a debug query) and as PoC runners. For `concolity mcp` that means: narrow tools, cached, with background
+tasks for the slow ones; not a whole-report tool. The method is the skill `bug-hunter:hunt` in formalmind/skills.
+
 ## 2. Bug classes and the bytecode oracles that catch them
 
 Each oracle runs on a concrete execution (a test, a fuzz input, a concolic solution), so a hit is a real run with
