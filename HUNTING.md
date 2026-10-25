@@ -46,7 +46,7 @@ The point: use the tools as the Bug Hunter would, before building more around th
 | H1 | `ClaimTransfers.Batch` (33 credits) overflows in one `matchBook` | ruled out | counted: ≤ 5 distinct (currency, recipient) keys per pair, ≤ 8 pairs, so ≤ 16 makers × 2 + the vault = 33; self-credits and pool fills bypass the batch |
 | H2 | deferred payouts (`flush`) read before they're applied | ruled out | nothing between credit and flush reads those claim balances |
 | H3 | an authorized executor can burn a maker's nonces (`useNonce`), invalidating their pending signatures | informational | real, but within the trust model: an executor can already cancel the maker's orders, which is worse |
-| H4 | the repriced bid floor (`updatePrice`, AsyncFiller.sol:271) rounds or caps wrongly | ruled out | `minPriorityFee` is min(0.1%, $0.10) as documented; floor rounding only below the $10 pool minimum; `coverage --at` shows both sides taken (310 and 455 times) |
+| H4 | the repriced bid floor (`updatePrice`, AsyncFiller.sol:271) rounds or caps wrongly | ruled out | `minPriorityFee` is min(0.1%, $0.10) as documented; floor rounding only below the $10 pool minimum; `coverage --at` shows both sides of both JUMPIs on that line taken (165/145 and 307/3 times) |
 
 What the tools got wrong for an agent, and what changed (concolity bda31da):
 
