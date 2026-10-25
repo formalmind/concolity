@@ -45,6 +45,8 @@ pub enum Status {
 
 #[derive(Debug, Clone)]
 pub struct TestResult {
+    /// The test contract's file (`test/AsyncSwap.t.sol`).
+    pub file: String,
     pub contract: String,
     pub test: String,
     pub status: Status,
@@ -539,12 +541,12 @@ fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serd
     for (i, fns) in &contracts {
         let mut rng = Rng(0x5eed_c0de_u64 ^ (*i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         match catch_unwind(AssertUnwindSafe(|| run_contract(&mut s, &fresh, *i, fns, opts.fuzz_runs, &mut rng))) {
-            Ok(r) => results.extend(r),
+            Ok(r) => results.extend(r.into_iter().map(|t| TestResult { file: s.artifacts[*i].file.clone(), ..t })),
             Err(panic) => {
                 let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|m| m.to_string())).unwrap_or_default();
                 let name = s.artifacts[*i].name.clone();
                 for f in fns {
-                    results.push(TestResult { contract: name.clone(), test: f.clone(), status: Status::Fail(format!("the runner panicked: {msg}")), runs: 0, rejected: 0 });
+                    results.push(TestResult { file: s.artifacts[*i].file.clone(), contract: name.clone(), test: f.clone(), status: Status::Fail(format!("the runner panicked: {msg}")), runs: 0, rejected: 0 });
                 }
                 // The EVM may be mid-transaction: start over, keeping what coverage has seen.
                 let cov = s.evm.inspector.coverage.take();
@@ -574,14 +576,14 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
             // `setUp()`, and the tests not run.
             if e.contains("createFork inside a test") {
                 let status = Status::Skipped("needs a fork (createFork)".into());
-                return fns.iter().map(|f| TestResult { contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
+                return fns.iter().map(|f| TestResult { file: String::new(), contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
             }
             // `vm.skip(true)` in setUp: forge reports one skipped `setUp()`.
             if let Some(at) = e.find("sol-debug: skip") {
                 let why = format!("vm.skip{}", e[at..].trim_start_matches("sol-debug: skip"));
-                return vec![TestResult { contract: short.clone(), test: "setUp()".into(), status: Status::Skipped(why), runs: 0, rejected: 0 }];
+                return vec![TestResult { file: String::new(), contract: short.clone(), test: "setUp()".into(), status: Status::Skipped(why), runs: 0, rejected: 0 }];
             }
-            return vec![TestResult { contract: short.clone(), test: "setUp()".into(), status: Status::Fail(format!("setUp: {e}")), runs: 0, rejected: 0 }];
+            return vec![TestResult { file: String::new(), contract: short.clone(), test: "setUp()".into(), status: Status::Fail(format!("setUp: {e}")), runs: 0, rejected: 0 }];
         }
     };
     let ready = s.snapshot();
@@ -589,11 +591,11 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
     for sig in fns {
         let name = &sig[..sig.find('(').unwrap()];
         if let Some(why) = filters.excludes(&short, sig) {
-            tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped(why.into()), runs: 0, rejected: 0 });
+            tests.push(TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Skipped(why.into()), runs: 0, rejected: 0 });
             continue;
         }
         if name.starts_with("invariant") || name.starts_with("statefulFuzz") {
-            tests.push(TestResult { contract: short.clone(), test: sig.clone(), status: Status::Skipped("invariant campaign".into()), runs: 0, rejected: 0 });
+            tests.push(TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Skipped("invariant campaign".into()), runs: 0, rejected: 0 });
             continue;
         }
         let params = &sig[sig.find('(').unwrap()..];
@@ -601,7 +603,7 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
         let types = DynSolType::parse(params).ok();
         let fuzz = params != "()";
         let runs = if fuzz { fuzz_runs } else { 1 };
-        let mut result = TestResult { contract: short.clone(), test: sig.clone(), status: Status::Pass, runs: 0, rejected: 0 };
+        let mut result = TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Pass, runs: 0, rejected: 0 };
         for _ in 0..runs {
             let mut shown = String::new();
             let data = if fuzz {

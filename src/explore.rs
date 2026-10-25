@@ -75,6 +75,8 @@ impl Outcome {
 
 #[derive(Clone, Debug)]
 pub struct Finding {
+    /// The harness's test file.
+    pub file: String,
     pub test: String,
     pub args: String,
     pub reason: String,
@@ -355,6 +357,9 @@ fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Setti
         for sig in &fns {
             explore_test(&mut s, &ready, address, &format!("{name}::{sig}"), sig, opts, wanted, &mut solver, &mut labels, &mut part);
         }
+        for f in part.findings.iter_mut().filter(|f| f.file.is_empty()) {
+            f.file = s.artifacts[ci].file.clone();
+        }
     }
     Ok(part)
 }
@@ -469,7 +474,7 @@ fn explore_test(
         if let Some(reason) = &failed {
             if runs > 1 + opts.seeds {
                 // An input the solver produced makes the test fail: the test's claim doesn't hold for it.
-                part.findings.push(Finding { test: test.to_string(), args: args.clone(), reason: reason.clone() });
+                part.findings.push(Finding { file: String::new(), test: test.to_string(), args: args.clone(), reason: reason.clone() });
             }
         }
 

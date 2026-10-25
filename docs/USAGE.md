@@ -41,6 +41,7 @@ concolity coverage . --lcov lcov.info                      # editor gutters
 concolity coverage . --bindings                            # every call site and what ran there
 concolity coverage . --fast                                # optimizer off, like forge coverage (not the shipped code)
 concolity coverage . --json > coverage.json                # everything, for agents and tools
+concolity coverage . --sarif .formal/findings.sarif       # failing tests, missing bytecode, untaken sides, for editors
 forge test --json > forge.json && concolity coverage . --against-forge forge.json   # where the runner and forge disagree
 ```
 
@@ -54,6 +55,7 @@ concolity explore .                                        # every untaken side 
 concolity explore . --only ReduceMatchedOrders             # only fuzz tests whose Contract::name contains this
 concolity explore . --timeout-ms 20000                     # a deep equation (256-bit multiplication) needs longer
 concolity explore . --json                                 # every side with its outcome, and the findings
+concolity explore . --sarif .formal/findings.sarif        # findings, unreachable and solved sides (merged into the file)
 CONCOLITY_DEBUG=1 concolity explore . --only X            # print each run's decisions and pins
 ```
 

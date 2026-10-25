@@ -41,6 +41,9 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// Write SARIF here (merged with the file's other runs), e.g. .formal/findings.sarif.
+        #[arg(long)]
+        sarif: Option<PathBuf>,
     },
     /// The explore loop: untaken JUMPI sides as targets, fuzz tests as harnesses, z3 to solve for them.
     Explore {
@@ -66,6 +69,9 @@ enum Command {
         /// Print the report as JSON.
         #[arg(long)]
         json: bool,
+        /// Write SARIF here (merged with the file's other runs), e.g. .formal/findings.sarif.
+        #[arg(long)]
+        sarif: Option<PathBuf>,
     },
     /// Debug one Foundry test, for an agent: answers are JSON (`--text` for the line view people read).
     Debug {
@@ -99,9 +105,13 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json } => {
-            let opts = concolity::coverage::Options { root, test_dir, skip, include, fuzz_runs, fast };
+        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json, sarif } => {
+            let opts = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs, fast };
             let report = concolity::coverage::run(&opts)?;
+            if let Some(path) = sarif {
+                concolity::sarif::write(&path, concolity::sarif::coverage_run(&root, &report))?;
+                eprintln!("sarif: {}", path.display());
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report.to_json())?);
             } else {
@@ -120,10 +130,14 @@ fn main() -> Result<()> {
                 eprintln!("lcov: {}", path.display());
             }
         }
-        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds, json } => {
-            let coverage = concolity::coverage::Options { root, test_dir, skip, include, fuzz_runs: 32, fast: false };
+        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds, json, sarif } => {
+            let coverage = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs: 32, fast: false };
             let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only };
             let report = concolity::explore::run(&opts)?;
+            if let Some(path) = sarif {
+                concolity::sarif::write(&path, concolity::sarif::explore_run(&root, &report))?;
+                eprintln!("sarif: {}", path.display());
+            }
             if json {
                 println!("{}", serde_json::to_string_pretty(&report.to_json())?);
             } else {
