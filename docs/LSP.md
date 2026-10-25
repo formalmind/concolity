@@ -43,11 +43,23 @@ A result carries:
 | `relatedLocations` | the PoC test, the Lean theorem that proves a guard dead |
 | `fingerprints` | file + function + rule, so a result survives edits above it |
 
+## Built (2026-10-25)
+
+- concolity writes `--sarif .formal/findings.sarif` from coverage and explore (one run per command, merged).
+- solidity-language-server, branch `claude/sarif-findings`: results at error / warning / note become diagnostics
+  (`source` = the tool, `code` = the rule; note shows as information), and every result on a line, the `none` ones
+  too (solved and untaken sides), shows under the symbol's hover. A watcher on `**/.formal/findings.sarif`
+  republishes the open files when it changes (in editors that support registered file watchers).
+
+```sh
+concolity coverage . --sarif .formal/findings.sarif && concolity explore . --only <harness> --sarif .formal/findings.sarif
+```
+
 ## What the language server shows
 
 1. **Diagnostics.** Each result becomes a `Diagnostic` with `code` = `ruleId` and `source` = `concolity` or `swarm`, and
-   its related locations as `relatedInformation`. A side that's unsat from every harness gets `DiagnosticTag.Unnecessary`,
-   so the dead guard renders greyed out, the way unused code does.
+   its related locations as `relatedInformation` (built, without related locations yet). An unreachable side is a
+   note (information), not `DiagnosticTag.Unnecessary`: the line still runs, only one of its sides doesn't.
 2. **Code lens over each function** (the server knows function ranges from the AST): `lines 12/14 · sides 5/8 · 2
    solved · 1 dead · 1 finding`. Clicking it runs `concolity.explore` scoped to that function.
 3. **Inlay hints on branch lines**: `⟂ false side never taken`, `solved: x = 0x5eed1e55`, `dead (unsat, 3 harnesses)`.
