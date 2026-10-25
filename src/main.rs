@@ -38,6 +38,9 @@ enum Command {
         /// Optimizer off, like forge coverage: faster to compile, but not the bytecode that ships.
         #[arg(long)]
         fast: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// The explore loop: untaken JUMPI sides as targets, fuzz tests as harnesses, z3 to solve for them.
     Explore {
@@ -60,6 +63,9 @@ enum Command {
         timeout_ms: u32,
         #[arg(long, default_value_t = 2)]
         seeds: usize,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
     },
     /// Debug one Foundry test, for an agent: answers are JSON (`--text` for the line view people read).
     Debug {
@@ -93,10 +99,14 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast } => {
+        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json } => {
             let opts = concolity::coverage::Options { root, test_dir, skip, include, fuzz_runs, fast };
             let report = concolity::coverage::run(&opts)?;
-            print!("{}", report.summary(bindings));
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+            } else {
+                print!("{}", report.summary(bindings));
+            }
             if let Some(path) = against_forge {
                 let forge: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
                 let diff = concolity::coverage::against_forge(&report, &forge);
@@ -110,10 +120,15 @@ fn main() -> Result<()> {
                 eprintln!("lcov: {}", path.display());
             }
         }
-        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds } => {
+        Command::Explore { root, test_dir, skip, include, only, runs_per_test, flips_per_run, timeout_ms, seeds, json } => {
             let coverage = concolity::coverage::Options { root, test_dir, skip, include, fuzz_runs: 32, fast: false };
             let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only };
-            print!("{}", concolity::explore::run(&opts)?.summary());
+            let report = concolity::explore::run(&opts)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+            } else {
+                print!("{}", report.summary());
+            }
         }
         Command::Debug { root, file, test, query, args, n, var, function, limit, text } => {
             use sol_debug::agent;

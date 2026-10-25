@@ -567,6 +567,40 @@ fn explore_test(
 }
 
 impl Report {
+    /// The report as JSON: every untaken side with its outcome, the findings, and the run's counters.
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let targets: Vec<_> = self
+            .targets
+            .iter()
+            .map(|(side, outcome)| {
+                let o = match outcome {
+                    Outcome::Solved { test, args, test_failed } => json!({ "outcome": "solved", "test": test, "args": args, "test_failed": test_failed }),
+                    Outcome::Unsat { test, pinned } => json!({ "outcome": if *pinned { "unsat_pinned" } else { "unsat" }, "test": test }),
+                    Outcome::Unknown { test } => json!({ "outcome": "unknown", "test": test }),
+                    Outcome::InputsDontReach => json!({ "outcome": "inputs_dont_reach" }),
+                    Outcome::NotReached => json!({ "outcome": "not_reached" }),
+                };
+                let mut v = json!({ "file": side.file, "line": side.line, "code": side.code, "pc": side.pc, "jumped": side.jumped });
+                v.as_object_mut().unwrap().extend(o.as_object().unwrap().clone());
+                v
+            })
+            .collect();
+        let findings: Vec<_> = self.findings.iter().map(|f| json!({ "test": f.test, "args": f.args, "reason": f.reason })).collect();
+        json!({
+            "targets": targets,
+            "findings": findings,
+            "runs": self.runs,
+            "solver_calls": self.solver_calls,
+            "mismatches": self.mismatches,
+            "mismatch_ops": self.mismatch_ops,
+            "pinned_ops": self.pinned_ops,
+            "malformed": self.malformed,
+            "stale": self.stale,
+            "ms": self.time.as_millis() as u64,
+        })
+    }
+
     pub fn summary(&self) -> String {
         use std::fmt::Write;
         let mut o = String::new();

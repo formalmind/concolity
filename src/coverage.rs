@@ -845,6 +845,57 @@ fn pct(a: usize, b: usize) -> String {
 }
 
 impl Report {
+    /// The report as JSON, for the desktop app and for agents: per-file line hits and JUMPI sides, every test's
+    /// verdict, the bindings, and what didn't compile.
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let files: serde_json::Map<String, serde_json::Value> = self
+            .files
+            .iter()
+            .map(|(file, f)| {
+                let (lh, lt) = f.lines_hit();
+                let (bh, bt) = f.sides_hit();
+                let lines: Vec<_> = f.lines.iter().map(|(l, n)| json!([l, n])).collect();
+                let branches: Vec<_> = f
+                    .branches
+                    .iter()
+                    .map(|((line, code, pc), (j, fl))| json!({ "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl }))
+                    .collect();
+                (file.clone(), json!({ "lines_hit": lh, "lines": lt, "sides_hit": bh, "sides": bt, "line_hits": lines, "branches": branches }))
+            })
+            .collect();
+        let tests: Vec<_> = self
+            .tests
+            .iter()
+            .map(|t| {
+                let (status, reason) = match &t.status {
+                    Status::Pass => ("pass", None),
+                    Status::Fail(r) => ("fail", Some(r.as_str())),
+                    Status::Skipped(r) => ("skipped", Some(r.as_str())),
+                };
+                json!({ "contract": t.contract, "test": t.test, "status": status, "reason": reason, "runs": t.runs, "rejected": t.rejected })
+            })
+            .collect();
+        let bindings: Vec<_> = self
+            .bindings
+            .iter()
+            .map(|b| {
+                json!({ "site": b.site, "callee": b.callee, "missing": b.missing, "varying": b.varying, "count": b.count,
+                        "empty": b.empty.iter().map(|a| a.to_string()).collect::<Vec<_>>() })
+            })
+            .collect();
+        json!({
+            "files": files,
+            "tests": tests,
+            "bindings": bindings,
+            "unsupported_cheatcodes": self.unsupported,
+            "foreign_code": self.foreign_code,
+            "compile_errors": self.compile_errors,
+            "compile_ms": self.compile_time.as_millis() as u64,
+            "run_ms": self.run_time.as_millis() as u64,
+        })
+    }
+
     pub fn totals(&self) -> ((usize, usize), (usize, usize)) {
         let mut l = (0, 0);
         let mut b = (0, 0);
