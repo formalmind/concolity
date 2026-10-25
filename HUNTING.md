@@ -15,8 +15,22 @@ Three parts:
 |---|---|---|---|
 | 2026-10-24 | `AsyncMatching._matchAmounts` | Two guards are dead by arithmetic (`assetAmount > sell.amountIn`, `quoteAmount > buy.amountIn`: a floor then a ceil can't exceed the input), gas on every match. The other four guard the `_crosses` precondition. All six unreachable for every escrowable amount (z3, case-studies/async-swap). | proved; dead pair is a gas note |
 | 2026-10-24 | `_crosses` / `TickPrice` | The whole match-safety argument rests on "distinct tick keys imply a strict exact cross". Unchecked: `TickPrice.floorTick` through `TickMath.getTickAtSqrtPrice` (assembly) and the numeraire flip in `_priceKey`. | open: next concolic target |
-| 2026-10-24 | `AsyncSwap.matchBook` / `PENDING_MATCH_ID_SLOT` | The pending-order id is in **transient** storage, so it lives for the whole transaction, not the unlock. An order placed through a path other than the Router (a direct `PoolManager.swap` with hook data) leaves it set: every later `matchBook` on that pool in the same transaction returns 0 while that order rests. forge clears transient storage between a test's top-level calls, so the test suite can't see this. | to verify: severity is likely low (one transaction), but batch/multicall integrators would see silent no-matches |
+| 2026-10-24 | `AsyncSwap.matchBook` / `PENDING_MATCH_ID_SLOT` | The pending-order id is in **transient** storage, so it lives for the whole transaction, not the unlock. An order placed through a path other than the Router (a direct `PoolManager.swap` with hook data) leaves it set: every later `matchBook` on that pool in the same transaction returns 0 while that order rests. forge clears transient storage between a test's top-level calls, so the test suite can't see this. | to verify: severity is likely low (one transaction), but batch/multicall integrators would see silent no-matches. **Proposed fix (Meek):** the hook trusts only the Router as caller, fixed at deployment, so no other path can set the pending id |
 | 2026-10-24 | test suite vs real transactions | Same root: forge runs each top-level test call as its own transaction. Any Async Swap property that depends on transient state (locks, pending ids, PoolManager deltas) is only tested across transactions, never within one. A same-transaction sequence harness (several hook/router calls in one tx) would test what production batches do. | open: harness to write |
+
+### Explore run, Async Swap at 3295d4d (2026-10-24)
+
+1,568 untaken JUMPI sides: 4 solved, 5 unsat, 12 unsat under pinned values, 6 unknown, 269 where the test's inputs
+don't reach the condition, 1,272 not reached by any fuzz test. 0 findings, 0 model mismatches, 387 s.
+
+- **Solved** (new inputs covering a side no test took): `AsyncSwap.sol:160` (zero new owner), `CurrencySettler.sol:24`
+  (`payer != address(this)`), `RadixPriceTree.sol:82` and `:106`.
+- **Unsat** means unreachable *from that test's harness*, not from the contract: `AsyncSwap.sol:446`
+  (`amountSpecified > 0`) and `:479` from `FeeClaimsTest`, `Router.sol:116` from a priorityKey test, `AsyncFiller.sol:142`
+  and `:149` from `SpecBookFormalTest`. These are test-design notes, each harness pins values that fix the branch.
+- **The real gap is reach:** 1,272 sides are never reached by a fuzz test's arguments. Unit tests reach them with
+  fixed values, and unit tests have no symbolic inputs. Next: make storage and cheatcode-set values symbolic (a
+  harness mode), and solve symbolic mapping slots (198k SLOAD pins in this run).
 
 ## 2. Bug classes and the bytecode oracles that catch them
 
@@ -80,6 +94,10 @@ not only "did this happen" but "is there an input that makes it happen".
 | 2026-10-24 | concolity model | Branches whose condition folded to a constant were recorded as symbolic decisions. | wasted solver calls on the dispatcher |
 | 2026-10-24 | concolity model | `EXP` with a large exponent built 500 chained multiplications (z3 took 22 GB). Now exact up to x^15, base pinned beyond. | nothing; a resource bug |
 | 2026-10-24 | sol-debug runner | Transient storage wasn't cleared between a test's top-level calls (forge does). 39 Async Swap tests disagreed with forge. | (the other way round) this is what made the matchBook lead visible |
+| 2026-10-24 | concolity model | Shadows went stale when storage changed where the Shadow couldn't see it: a frame that `expectRevert` turned into a success (revm rolled it back, the Shadow kept its writes), `vm.store`, `revertToState`, transient storage cleared between top-level calls. On Async Swap, 4,928 self-check mismatches in one run. Now: the recorder hands the Shadow such a frame as failed; an operand or loaded value whose term no longer evaluates to revm's concrete value is dropped (counted as "stale"). ReduceMatchedOrders: 0 mismatches, 14 stale. | wrong solutions: a solver working on a term that doesn't describe the run "solves" branches the input can't reach |
+| 2026-10-24 | concolity explore | Every early "finding" was the solver flipping the ABI decoder's own checks (calldata too short, a dirty `bool`), so the inputs were malformed and the revert was the decoder's. Solutions that don't re-encode to themselves are dropped now. | real findings under a pile of decoder reverts |
+| 2026-10-24 | concolity explore | The canonical-ABI filter re-encoded decoded values, but alloy keeps a `uint8`'s whole word, so a `uint8` of 34359738368 re-encoded to itself. The first full Async Swap run reported 181 "findings", all solc's decoder reverting with no data. Now every value is range-checked, and queries assert the padding bytes of narrow static arguments are zero (bools ≤ 1), so the solver stops proposing them. **Keep this switchable:** against a Huff or assembly decoder the same solutions are the dirty-upper-bits oracle (§2 Memory), not noise. | real findings under 181 decoder reverts |
+| 2026-10-24 | concolity model | Storage keyed by a symbolic slot (a mapping indexed by a symbolic key: `keccak(key . slot)`) is pinned to the run's slot. In ReduceMatchedOrders: 1,366 SLOAD and 596 SSTORE pins. Every branch that depends on *which* order or user is touched is unsat under pinned values, not explored. | access-control and wrong-slot bugs indexed by caller or id. Next model step: symbolic keccak with a slot-equality theory |
 | 2026-10-24 | sol-debug runner | `revertToState` left accounts created after the snapshot with their balance; `expectRevert` returned empty data; `getDeployedCode` without library links; pranked calls with value panicked revm. | wrong verdicts on real suites |
 
 Solver note: 256-bit multiplication is z3's weak spot. `3y == z + 7` through solc's checked multiplication took about

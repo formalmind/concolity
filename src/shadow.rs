@@ -124,6 +124,8 @@ pub struct Shadow {
     pub output: Vec<Option<ExprId>>,
     /// How many steps ran, and how many of them pushed a symbolic result that the self-check compared.
     pub steps: usize,
+    /// Operand shadows dropped because their value wasn't the operand's (see `step`).
+    pub stale: usize,
     pub checked: usize,
     top_calldata: Option<Vec<Option<ExprId>>>,
     frames: Vec<Frame>,
@@ -159,6 +161,7 @@ impl Shadow {
             calldata_vars,
             output: vec![],
             steps: 0,
+            stale: 0,
             checked: 0,
             top_calldata: Some(top),
             frames: vec![],
@@ -223,9 +226,11 @@ impl Shadow {
         }
         match self.frames.last_mut() {
             Some(parent) => {
+                // The EVM copies min(range, output length) bytes into the caller's memory: those bytes take the
+                // output's shadows, or become concrete.
                 if let Some(range) = out {
-                    for (i, b) in output.iter().take(range.len()).enumerate() {
-                        set(&mut parent.memory, range.start + i, *b);
+                    for i in 0..range.len().min(result.output.len()) {
+                        set(&mut parent.memory, range.start + i, output.get(i).copied().flatten());
                     }
                 }
                 parent.returndata = output;
@@ -557,7 +562,18 @@ impl<CTX> Inspector<CTX> for Shadow {
         f.stack.resize(data.len(), None);
         let n = OpCode::new(o).map_or(0, |c| c.inputs() as usize).min(data.len());
         let vals: Vec<U256> = data.iter().rev().take(n).copied().collect();
-        let ins: Vec<Option<ExprId>> = (0..n).map(|_| f.stack.pop().unwrap()).collect();
+        let mut ins: Vec<Option<ExprId>> = (0..n).map(|_| f.stack.pop().unwrap()).collect();
+        // A shadow whose value isn't the operand's any more went stale (state changed under it: a reverted frame
+        // revm rolled back, a cheatcode, transient storage cleared between calls): it is dropped, not trusted.
+        for (i, slot) in ins.iter_mut().enumerate() {
+            if let Some(t) = *slot {
+                let v = if self.arena.sort(t) == Sort::Byte { None } else { Some(self.arena.value(t)) };
+                if v != Some(vals[i]) {
+                    *slot = None;
+                    self.stale += 1;
+                }
+            }
+        }
         let p = Pending { op: o, pc, ins, vals };
         let address = f.address;
 
@@ -611,6 +627,20 @@ impl<CTX> Inspector<CTX> for Shadow {
         // A result that folded to a constant is concrete.
         let outs: Vec<Option<ExprId>> =
             self.model(&p, top).into_iter().map(|t| t.filter(|t| self.arena.constant(*t).is_none())).collect();
+        let mut outs = outs;
+        // A stored shadow whose value isn't what revm loads was overwritten where we couldn't see it (vm.store, a
+        // rollback expectRevert hid, transient storage cleared between calls): stale, not a model bug. Forget it.
+        if matches!(p.op, op::SLOAD | op::TLOAD) {
+            if let (Some(Some(t)), Some(evm)) = (outs.first().copied(), top) {
+                if self.arena.value(t) != evm {
+                    let address = self.frames.last().unwrap().address;
+                    let map = if p.op == op::TLOAD { &mut self.transient } else { &mut self.storage };
+                    map.remove(&(address, p.vals[0]));
+                    outs[0] = None;
+                    self.stale += 1;
+                }
+            }
+        }
         let f = self.frames.last_mut().unwrap();
         // Self-check: the model's value for a single result must be revm's.
         if let (1, Some(Some(t)), Some(evm)) = (outs.len(), outs.last(), top) {

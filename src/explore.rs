@@ -87,6 +87,11 @@ pub struct Report {
     pub solver_calls: usize,
     /// Self-check failures: steps where the model's value wasn't revm's (bugs in the model, if any).
     pub mismatches: usize,
+    pub mismatch_ops: BTreeMap<String, usize>,
+    pub pinned_ops: BTreeMap<String, usize>,
+    pub malformed: usize,
+    /// Operand shadows dropped as stale (their value no longer the operand's).
+    pub stale: usize,
     pub time: Duration,
 }
 
@@ -130,6 +135,12 @@ struct Part {
     runs: usize,
     solver_calls: usize,
     mismatches: usize,
+    stale: usize,
+    /// Self-check failures and concretizations by opcode (to find what the model gets wrong or gives up on).
+    mismatch_ops: HashMap<u8, usize>,
+    pinned_ops: HashMap<u8, usize>,
+    /// Solutions dropped because they weren't well-formed ABI for the test's parameters.
+    malformed: usize,
 }
 
 fn better(slot: &mut Option<Outcome>, o: Outcome) {
@@ -151,6 +162,55 @@ fn show_args(sig: &str, data: &[u8]) -> String {
         Some(DynSolValue::Tuple(v)) => v.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" "),
         _ => format!("0x{}", revm::primitives::hex::encode(data)),
     }
+}
+
+/// Whether the arguments decode as the parameters and encode back to the same bytes.
+fn canonical(types: &DynSolType, data: &[u8]) -> bool {
+    match types.abi_decode_params(data.get(4..).unwrap_or(&[])) {
+        Ok(v) => v.abi_encode_params() == data[4..] && fits(&v),
+        Err(_) => false,
+    }
+}
+
+/// Every value within its type's range. The decoder keeps a uint8's whole word, so a dirty one re-encodes to the
+/// same bytes; solc's decoder reverts on it (with no data).
+fn fits(v: &alloy_dyn_abi::DynSolValue) -> bool {
+    use alloy_dyn_abi::DynSolValue as V;
+    match v {
+        V::Uint(x, n) => *n == 256 || *x >> *n == U256::ZERO,
+        V::Int(x, n) => *n == 256 || {
+            let hi = x.into_raw() >> (*n - 1);
+            hi == U256::ZERO || hi == U256::MAX >> (*n - 1)
+        },
+        V::FixedBytes(w, n) => w[*n..].iter().all(|b| *b == 0),
+        V::Array(xs) | V::FixedArray(xs) | V::Tuple(xs) => xs.iter().all(fits),
+        _ => true,
+    }
+}
+
+/// Bytes of the argument area that a well-formed call leaves zero (the padding of narrow static values in the head)
+/// and the largest value of each bool's last byte. Asserted on every query, so the solver doesn't spend its answers
+/// on calldata solc's decoder rejects.
+fn padding(ty: &DynSolType, at: usize, out: &mut Vec<(usize, u8)>) -> usize {
+    use DynSolType as T;
+    let zero = |out: &mut Vec<(usize, u8)>, r: std::ops::Range<usize>| out.extend(r.map(|i| (at + i, 0)));
+    match ty {
+        T::Uint(n) => zero(out, 0..32 - n / 8),
+        T::Address => zero(out, 0..12),
+        T::Bool => {
+            zero(out, 0..31);
+            out.push((at + 31, 1));
+        }
+        T::FixedBytes(n) => zero(out, *n..32),
+        T::Tuple(ts) if !ty.is_dynamic() => {
+            return ts.iter().fold(0, |size, t| size + padding(t, at + size, out));
+        }
+        T::FixedArray(t, n) if !ty.is_dynamic() => {
+            return (0..*n).fold(0, |size, _| size + padding(t, at + size, out));
+        }
+        _ => {}
+    }
+    32
 }
 
 /// The calldata with the solver's values in its symbolic bytes.
@@ -217,7 +277,9 @@ pub fn run(opts: &Options) -> Result<Report> {
 
     let mut best: HashMap<(String, usize, bool), Option<Outcome>> = targets.keys().map(|k| (k.clone(), None)).collect();
     let mut decided = HashSet::new();
-    let (mut findings, mut runs, mut solver_calls, mut mismatches) = (vec![], 0, 0, 0);
+    let (mut findings, mut runs, mut solver_calls, mut mismatches, mut malformed, mut stale) = (vec![], 0, 0, 0, 0, 0);
+    let (mut mismatch_ops, mut pinned_ops) = (BTreeMap::new(), BTreeMap::new());
+    let op_name = |o: u8| revm::bytecode::opcode::OpCode::new(o).map_or(format!("0x{o:02x}"), |c| c.as_str().to_string());
     for p in parts {
         let p = p?;
         for (k, o) in p.outcomes {
@@ -230,6 +292,14 @@ pub fn run(opts: &Options) -> Result<Report> {
         runs += p.runs;
         solver_calls += p.solver_calls;
         mismatches += p.mismatches;
+        malformed += p.malformed;
+        stale += p.stale;
+        for (o, n) in p.mismatch_ops {
+            *mismatch_ops.entry(op_name(o)).or_insert(0) += n;
+        }
+        for (o, n) in p.pinned_ops {
+            *pinned_ops.entry(op_name(o)).or_insert(0) += n;
+        }
     }
     let targets = targets
         .into_iter()
@@ -248,7 +318,7 @@ pub fn run(opts: &Options) -> Result<Report> {
         .collect();
     findings.sort_by(|a, b| (&a.test, &a.reason).cmp(&(&b.test, &b.reason)));
     findings.dedup_by(|a, b| a.test == b.test && a.reason == b.reason);
-    Ok(Report { targets, findings, runs, solver_calls, mismatches, time: started.elapsed() })
+    Ok(Report { targets, findings, runs, solver_calls, mismatches, mismatch_ops, pinned_ops, malformed, stale, time: started.elapsed() })
 }
 
 fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Settings, batch: &[String], test_dir: &str, opts: &Options, wanted: &HashSet<(String, usize, bool)>) -> Result<Part> {
@@ -339,6 +409,11 @@ fn explore_test(
     let selector = keccak256(sig.as_bytes())[..4].to_vec();
     let Ok(types) = DynSolType::parse(&sig[sig.find('(').unwrap()..]) else { return };
     let mut rng = Rng(0x5eed_c0de_u64 ^ (test.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut domain = vec![];
+    if let DynSolType::Tuple(ts) = &types {
+        // The head: a dynamic parameter is one offset word there.
+        ts.iter().fold(4, |at, t| at + if t.is_dynamic() { 32 } else { padding(t, at, &mut domain) });
+    }
     let mut queue: VecDeque<Vec<u8>> = VecDeque::new();
     // Seeds: all-zero arguments, then a few random ones.
     if let DynSolType::Tuple(ts) = &types {
@@ -372,6 +447,13 @@ fn explore_test(
         let Ok(run) = run else { continue };
         let Ok(mut shadow) = Arc::try_unwrap(shadow).map(|m| m.into_inner().unwrap()) else { continue };
         part.mismatches += shadow.mismatches.len();
+        part.stale += shadow.stale;
+        for m in &shadow.mismatches {
+            *part.mismatch_ops.entry(m.op).or_default() += 1;
+        }
+        for c in &shadow.concretized {
+            *part.pinned_ops.entry(c.op).or_default() += 1;
+        }
         let rejected = !run.success && coverage::reason(&run) == "sol-debug: vm.assume rejected the inputs";
 
         // Which target sides did this concrete run take?
@@ -400,6 +482,7 @@ fn explore_test(
                 eprintln!("  pinned at decision {}: op 0x{:02x} pc {} = {}", c.at, c.op, c.pc, c.value);
             }
         }
+        let vars: HashMap<usize, crate::expr::ExprId> = shadow.calldata_vars.iter().map(|(v, b)| (*b, *v)).collect();
         // Leaves: each decision's other side, under the path before it.
         let path = shadow.path.clone();
         let mut prefix = std::collections::hash_map::DefaultHasher::new();
@@ -436,7 +519,16 @@ fn explore_test(
             }
             let d = path[i].clone();
             let pinned = shadow.concretized.iter().any(|c| c.at <= i);
-            let query = shadow.flip(i);
+            let mut query = shadow.flip(i);
+            query.extend(domain.iter().filter_map(|(byte, max)| {
+                let v = *vars.get(byte)?;
+                let mut bytes: Vec<_> = (0..31).map(|_| shadow.arena.byte(0)).collect();
+                bytes.push(v);
+                let w = shadow.arena.concat(bytes);
+                let m = shadow.arena.word(U256::from(*max));
+                let gt = shadow.arena.cmp(crate::expr::CmpOp::Gt, w, m);
+                Some(shadow.arena.bool_not(gt))
+            }));
             if solver.reset().is_err() {
                 return;
             }
@@ -447,6 +539,12 @@ fn explore_test(
             match answer {
                 Ok(Answer::Sat(model)) => {
                     let next = with_model(&shadow, &data, &model);
+                    // Only inputs a fuzzer could give: canonical ABI for the parameters (no bool of 2, no dirty
+                    // address bits). Flipping the decoder's own checks makes the others.
+                    if !canonical(&types, &next) {
+                        part.malformed += 1;
+                        continue;
+                    }
                     if prio == 0 {
                         queue.push_front(next);
                     } else {
@@ -484,7 +582,9 @@ impl Report {
             count(|x| matches!(x, Outcome::InputsDontReach)),
             count(|x| matches!(x, Outcome::NotReached)),
         );
-        let _ = writeln!(o, "{} runs, {} solver calls, {} model self-check mismatches, {:.1}s\n", self.runs, self.solver_calls, self.mismatches, self.time.as_secs_f64());
+        let _ = writeln!(o, "{} runs, {} solver calls, {} malformed solutions dropped, {:.1}s", self.runs, self.solver_calls, self.malformed, self.time.as_secs_f64());
+        let _ = writeln!(o, "model self-check mismatches: {} {:?}; stale shadows dropped: {}", self.mismatches, self.mismatch_ops, self.stale);
+        let _ = writeln!(o, "values pinned, by opcode: {:?}\n", self.pinned_ops);
         let mut last = String::new();
         for (side, out) in &self.targets {
             if side.file != last {
