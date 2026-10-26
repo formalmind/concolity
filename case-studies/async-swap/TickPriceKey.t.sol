@@ -36,7 +36,11 @@ contract TickPriceKeyTest is Test {
             assertEq(large, small, "100e18 for 200e18 is the price of 1 for 2");
             assertTrue(large != 1 && large != LAST_KEY, "a price of 2 or 1/2 is far from the end keys");
             // A million tokens for a million: price 1, tick 0, the middle key.
-            assertEq(TickPrice.key(isBuy, zeroForOne, 1e24, 1e24), uint128(uint24(-TickMath.MIN_TICK)) + 1, "price 1 is tick 0");
+            assertEq(
+                TickPrice.key(isBuy, zeroForOne, 1e24, 1e24),
+                uint128(uint24(-TickMath.MIN_TICK)) + 1,
+                "price 1 is tick 0"
+            );
         }
     }
 }
