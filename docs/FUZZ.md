@@ -249,6 +249,8 @@ concolity fuzz <root> --json --sarif .formal/findings.sarif
 `coverage` changes too. It runs invariant tests with a short campaign instead of skipping them, so its numbers count
 what the invariants reach. The desktop app's analysis tools (`desktop/src-tauri/src/analysis.rs` on `release/0.2`) get
 a `fuzz` tool next to `coverage` and `explore`, run as a background task, as the dogfooding log asks for slow tools.
+**It is the first tool the app runs** when a project is opened: the campaign starts in the background, and the swarm
+and the hunter read its findings, its coverage and its corpus as they arrive.
 The `concolity` skill gets a "fuzz" section and a line in its "Pick the command" table.
 
 ## 11. Speed
