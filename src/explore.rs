@@ -55,9 +55,18 @@ pub struct Side {
 
 #[derive(Clone, Debug)]
 pub enum Outcome {
-    Solved { test: String, args: String, test_failed: Option<String> },
-    Unsat { test: String, pinned: bool },
-    Unknown { test: String },
+    Solved {
+        test: String,
+        args: String,
+        test_failed: Option<String>,
+    },
+    Unsat {
+        test: String,
+        pinned: bool,
+    },
+    Unknown {
+        test: String,
+    },
     InputsDontReach,
     NotReached,
 }
@@ -116,16 +125,34 @@ impl revm::Inspector<Ctx> for Shared {
     fn step_end(&mut self, i: &mut revm::interpreter::Interpreter, c: &mut Ctx) {
         self.0.lock().unwrap().step_end(i, c)
     }
-    fn call(&mut self, c: &mut Ctx, inputs: &mut revm::interpreter::CallInputs) -> Option<revm::interpreter::CallOutcome> {
+    fn call(
+        &mut self,
+        c: &mut Ctx,
+        inputs: &mut revm::interpreter::CallInputs,
+    ) -> Option<revm::interpreter::CallOutcome> {
         self.0.lock().unwrap().call(c, inputs)
     }
-    fn call_end(&mut self, c: &mut Ctx, inputs: &revm::interpreter::CallInputs, o: &mut revm::interpreter::CallOutcome) {
+    fn call_end(
+        &mut self,
+        c: &mut Ctx,
+        inputs: &revm::interpreter::CallInputs,
+        o: &mut revm::interpreter::CallOutcome,
+    ) {
         self.0.lock().unwrap().call_end(c, inputs, o)
     }
-    fn create(&mut self, c: &mut Ctx, inputs: &mut revm::interpreter::CreateInputs) -> Option<revm::interpreter::CreateOutcome> {
+    fn create(
+        &mut self,
+        c: &mut Ctx,
+        inputs: &mut revm::interpreter::CreateInputs,
+    ) -> Option<revm::interpreter::CreateOutcome> {
         self.0.lock().unwrap().create(c, inputs)
     }
-    fn create_end(&mut self, c: &mut Ctx, inputs: &revm::interpreter::CreateInputs, o: &mut revm::interpreter::CreateOutcome) {
+    fn create_end(
+        &mut self,
+        c: &mut Ctx,
+        inputs: &revm::interpreter::CreateInputs,
+        o: &mut revm::interpreter::CreateOutcome,
+    ) {
         self.0.lock().unwrap().create_end(c, inputs, o)
     }
 }
@@ -164,26 +191,51 @@ fn record(part: &mut Part, key: (String, usize, bool), o: Outcome) {
 /// The fuzz arguments in the calldata, as `--arg` values for `concolity debug`.
 fn show_args(sig: &str, data: &[u8]) -> String {
     let params = &sig[sig.find('(').unwrap_or(0)..];
-    match DynSolType::parse(params).ok().and_then(|t| t.abi_decode_params(data.get(4..).unwrap_or(&[])).ok()) {
-        Some(DynSolValue::Tuple(v)) => v.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" "),
+    match DynSolType::parse(params)
+        .ok()
+        .and_then(|t| t.abi_decode_params(data.get(4..).unwrap_or(&[])).ok())
+    {
+        Some(DynSolValue::Tuple(v)) => v
+            .iter()
+            .map(sol_debug::session::show_value)
+            .collect::<Vec<_>>()
+            .join(" "),
         _ => format!("0x{}", revm::primitives::hex::encode(data)),
     }
 }
 
 /// A finding's inputs, reduced (`reduce.rs`): the test must keep failing with the same decoded reason.
-fn reduce_finding(s: &mut Session, ready: &sol_debug::session::Snapshot, address: Address, selector: &[u8], types: &DynSolType, data: &[u8], reason: &str) -> String {
-    let Ok(DynSolValue::Tuple(args)) = types.abi_decode_params(data.get(4..).unwrap_or(&[])) else { return String::new() };
+fn reduce_finding(
+    s: &mut Session,
+    ready: &sol_debug::session::Snapshot,
+    address: Address,
+    selector: &[u8],
+    types: &DynSolType,
+    data: &[u8],
+    reason: &str,
+) -> String {
+    let Ok(DynSolValue::Tuple(args)) = types.abi_decode_params(data.get(4..).unwrap_or(&[])) else {
+        return String::new();
+    };
     let mut fails = |a: &[DynSolValue]| {
         let mut d = selector.to_vec();
         d.extend(DynSolValue::Tuple(a.to_vec()).abi_encode_params());
         s.restore(ready);
-        match s.transact_quiet(sol_debug::SENDER, TxKind::Call(address), Bytes::from(d), U256::ZERO) {
+        match s.transact_quiet(
+            sol_debug::SENDER,
+            TxKind::Call(address),
+            Bytes::from(d),
+            U256::ZERO,
+        ) {
             Ok(run) => !run.success && sol_debug::agent::decode_revert(s, &run.output) == reason,
             Err(_) => false,
         }
     };
     let (out, _) = crate::reduce::reduce(args, 3000, &mut fails);
-    out.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" ")
+    out.iter()
+        .map(sol_debug::session::show_value)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Whether the arguments decode as the parameters and encode back to the same bytes.
@@ -200,10 +252,12 @@ fn fits(v: &alloy_dyn_abi::DynSolValue) -> bool {
     use alloy_dyn_abi::DynSolValue as V;
     match v {
         V::Uint(x, n) => *n == 256 || *x >> *n == U256::ZERO,
-        V::Int(x, n) => *n == 256 || {
-            let hi = x.into_raw() >> (*n - 1);
-            hi == U256::ZERO || hi == U256::MAX >> (*n - 1)
-        },
+        V::Int(x, n) => {
+            *n == 256 || {
+                let hi = x.into_raw() >> (*n - 1);
+                hi == U256::ZERO || hi == U256::MAX >> (*n - 1)
+            }
+        }
         V::FixedBytes(w, n) => w[*n..].iter().all(|b| *b == 0),
         V::Array(xs) | V::FixedArray(xs) | V::Tuple(xs) => xs.iter().all(fits),
         _ => true,
@@ -215,7 +269,8 @@ fn fits(v: &alloy_dyn_abi::DynSolValue) -> bool {
 /// on calldata solc's decoder rejects.
 fn padding(ty: &DynSolType, at: usize, out: &mut Vec<(usize, u8)>) -> usize {
     use DynSolType as T;
-    let zero = |out: &mut Vec<(usize, u8)>, r: std::ops::Range<usize>| out.extend(r.map(|i| (at + i, 0)));
+    let zero =
+        |out: &mut Vec<(usize, u8)>, r: std::ops::Range<usize>| out.extend(r.map(|i| (at + i, 0)));
     match ty {
         T::Uint(n) => zero(out, 0..32 - n / 8),
         T::Address => zero(out, 0..12),
@@ -225,7 +280,9 @@ fn padding(ty: &DynSolType, at: usize, out: &mut Vec<(usize, u8)>) -> usize {
         }
         T::FixedBytes(n) => zero(out, *n..32),
         T::Tuple(ts) if !ty.is_dynamic() => {
-            return ts.iter().fold(0, |size, t| size + padding(t, at + size, out));
+            return ts
+                .iter()
+                .fold(0, |size, t| size + padding(t, at + size, out));
         }
         T::FixedArray(t, n) if !ty.is_dynamic() => {
             return (0..*n).fold(0, |size, _| size + padding(t, at + size, out));
@@ -256,12 +313,25 @@ pub fn run(opts: &Options) -> Result<Report> {
         if *j > 0 || *fl > 0 {
             reached.insert((code.clone(), *pc));
         }
-        if opts.target.as_ref().is_some_and(|(f, l)| !(file.ends_with(f.as_str()) && l == line)) {
+        if opts
+            .target
+            .as_ref()
+            .is_some_and(|(f, l)| !(file.ends_with(f.as_str()) && l == line))
+        {
             continue;
         }
         for (taken, jumped) in [(*j, true), (*fl, false)] {
             if taken == 0 {
-                targets.insert((code.clone(), *pc, jumped), Side { file: file.clone(), line: *line, code: code.clone(), pc: *pc, jumped });
+                targets.insert(
+                    (code.clone(), *pc, jumped),
+                    Side {
+                        file: file.clone(),
+                        line: *line,
+                        code: code.clone(),
+                        pc: *pc,
+                        jumped,
+                    },
+                );
             }
         }
     }
@@ -276,7 +346,11 @@ pub fn run(opts: &Options) -> Result<Report> {
     // With --only, compile just the test files that can hold those harnesses (their source names the contract).
     if let Some(only) = &opts.only {
         let contract = only.split("::").next().unwrap_or(only);
-        let picked: Vec<String> = files.iter().filter(|f| std::fs::read_to_string(root.join(f)).is_ok_and(|t| t.contains(contract))).cloned().collect();
+        let picked: Vec<String> = files
+            .iter()
+            .filter(|f| std::fs::read_to_string(root.join(f)).is_ok_and(|t| t.contains(contract)))
+            .cloned()
+            .collect();
         if !picked.is_empty() {
             files = picked;
         }
@@ -287,13 +361,22 @@ pub fn run(opts: &Options) -> Result<Report> {
     }
     let project = formal_ast::solc::Project::load(root)?;
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let groups = crate::versions::group(root, &project.remappings, &files, project.solc_version.as_deref());
+    let groups = crate::versions::group(
+        root,
+        &project.remappings,
+        &files,
+        project.solc_version.as_deref(),
+    );
     let mut work = vec![];
     for (version, group) in &groups {
         let Some(v) = version else { continue };
         let mut p = project.clone();
         p.solc_version = Some(v.clone());
-        for b in coverage::batches(root, group, (cores * group.len()).div_ceil(files.len()).max(1)) {
+        for b in coverage::batches(
+            root,
+            group,
+            (cores * group.len()).div_ceil(files.len()).max(1),
+        ) {
             work.push((p.clone(), b));
         }
     }
@@ -306,14 +389,25 @@ pub fn run(opts: &Options) -> Result<Report> {
                 scope.spawn(move || worker(project, settings, batch, test_dir, opts, &wanted))
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("an explore worker died")))).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("an explore worker died")))
+            })
+            .collect()
     });
 
-    let mut best: HashMap<(String, usize, bool), Option<Outcome>> = targets.keys().map(|k| (k.clone(), None)).collect();
+    let mut best: HashMap<(String, usize, bool), Option<Outcome>> =
+        targets.keys().map(|k| (k.clone(), None)).collect();
     let mut decided = HashSet::new();
-    let (mut findings, mut runs, mut solver_calls, mut mismatches, mut malformed, mut stale) = (vec![], 0, 0, 0, 0, 0);
+    let (mut findings, mut runs, mut solver_calls, mut mismatches, mut malformed, mut stale) =
+        (vec![], 0, 0, 0, 0, 0);
     let (mut mismatch_ops, mut pinned_ops) = (BTreeMap::new(), BTreeMap::new());
-    let op_name = |o: u8| revm::bytecode::opcode::OpCode::new(o).map_or(format!("0x{o:02x}"), |c| c.as_str().to_string());
+    let op_name = |o: u8| {
+        revm::bytecode::opcode::OpCode::new(o)
+            .map_or(format!("0x{o:02x}"), |c| c.as_str().to_string())
+    };
     for p in parts {
         let p = p?;
         for (k, o) in p.outcomes {
@@ -339,25 +433,50 @@ pub fn run(opts: &Options) -> Result<Report> {
         .into_iter()
         .map(|(k, side)| {
             let site = (k.0.clone(), k.1);
-            let o = best.remove(&k).flatten().unwrap_or(if decided.contains(&site) {
-                // A decision ran there, but no flip toward this side was solved or refuted within the budget.
-                Outcome::Unknown { test: String::new() }
-            } else if reached.contains(&site) {
-                Outcome::InputsDontReach
-            } else {
-                Outcome::NotReached
-            });
+            let o = best
+                .remove(&k)
+                .flatten()
+                .unwrap_or(if decided.contains(&site) {
+                    // A decision ran there, but no flip toward this side was solved or refuted within the budget.
+                    Outcome::Unknown {
+                        test: String::new(),
+                    }
+                } else if reached.contains(&site) {
+                    Outcome::InputsDontReach
+                } else {
+                    Outcome::NotReached
+                });
             (side, o)
         })
         .collect();
     findings.sort_by(|a, b| (&a.test, &a.reason).cmp(&(&b.test, &b.reason)));
     findings.dedup_by(|a, b| a.test == b.test && a.reason == b.reason);
-    Ok(Report { targets, findings, runs, solver_calls, mismatches, mismatch_ops, pinned_ops, malformed, stale, time: started.elapsed() })
+    Ok(Report {
+        targets,
+        findings,
+        runs,
+        solver_calls,
+        mismatches,
+        mismatch_ops,
+        pinned_ops,
+        malformed,
+        stale,
+        time: started.elapsed(),
+    })
 }
 
-fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Settings, batch: &[String], test_dir: &str, opts: &Options, wanted: &HashSet<(String, usize, bool)>) -> Result<Part> {
+fn worker(
+    project: &formal_ast::solc::Project,
+    settings: &sol_debug::solc::Settings,
+    batch: &[String],
+    test_dir: &str,
+    opts: &Options,
+    wanted: &HashSet<(String, usize, bool)>,
+) -> Result<Part> {
     let mut part = Part::default();
-    let Ok(output) = coverage::compile_cached(project, batch, settings) else { return Ok(part) };
+    let Ok(output) = coverage::compile_cached(project, batch, settings) else {
+        return Ok(part);
+    };
     let permissions = Permissions::from_foundry(&project.root);
     let mut s = Session::from_output(project.clone(), &output)?;
     s.evm.inspector.coverage = Some(Coverage::default());
@@ -371,23 +490,47 @@ fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Setti
     let filters = Filters::from_foundry(&project.root);
     let mut solver = Solver::z3()?;
     let mut labels: HashMap<B256, Option<String>> = HashMap::new();
-    let contracts: Vec<usize> = (0..s.artifacts.len()).filter(|i| batch.contains(&s.artifacts[*i].file)).collect();
+    let contracts: Vec<usize> = (0..s.artifacts.len())
+        .filter(|i| batch.contains(&s.artifacts[*i].file))
+        .collect();
     for ci in contracts {
-        let fns: Vec<String> = coverage::test_functions(&s, ci, test_dir).into_iter().filter(|f| f.starts_with("test") && !f.ends_with("()")).collect();
+        let fns: Vec<String> = coverage::test_functions(&s, ci, test_dir)
+            .into_iter()
+            .filter(|f| f.starts_with("test") && !f.ends_with("()"))
+            .collect();
         let name = s.artifacts[ci].name.clone();
         let fns: Vec<String> = fns
             .into_iter()
-            .filter(|f| filters.excludes(&name, f).is_none() && opts.only.as_ref().is_none_or(|o| format!("{name}::{f}").contains(o.as_str())))
+            .filter(|f| {
+                filters.excludes(&name, f).is_none()
+                    && opts
+                        .only
+                        .as_ref()
+                        .is_none_or(|o| format!("{name}::{f}").contains(o.as_str()))
+            })
             .collect();
         if fns.is_empty() {
             continue;
         }
         s.restore(&fresh);
         let contract = format!("{}:{}", s.artifacts[ci].file, name);
-        let Ok(address) = s.deploy_test(&contract) else { continue };
+        let Ok(address) = s.deploy_test(&contract) else {
+            continue;
+        };
         let ready = s.snapshot();
         for sig in &fns {
-            explore_test(&mut s, &ready, address, &format!("{name}::{sig}"), sig, opts, wanted, &mut solver, &mut labels, &mut part);
+            explore_test(
+                &mut s,
+                &ready,
+                address,
+                &format!("{name}::{sig}"),
+                sig,
+                opts,
+                wanted,
+                &mut solver,
+                &mut labels,
+                &mut part,
+            );
         }
         for f in part.findings.iter_mut().filter(|f| f.file.is_empty()) {
             f.file = s.artifacts[ci].file.clone();
@@ -403,7 +546,13 @@ fn label_of(s: &Session, labels: &mut HashMap<B256, Option<String>>, code: B256)
     }
     let cov = s.evm.inspector.coverage.as_ref()?;
     let bytes = cov.index.get(&code).map(|&i| cov.codes[i].code.clone())?;
-    let l = s.identify(&bytes).map(|(i, k)| format!("{}{}", s.artifacts[i].name, if k == CodeKind::Init { " (init)" } else { "" }));
+    let l = s.identify(&bytes).map(|(i, k)| {
+        format!(
+            "{}{}",
+            s.artifacts[i].name,
+            if k == CodeKind::Init { " (init)" } else { "" }
+        )
+    });
     labels.insert(code, l.clone());
     l
 }
@@ -412,12 +561,24 @@ fn label_of(s: &Session, labels: &mut HashMap<B256, Option<String>>, code: B256)
 type JumpCount = (usize, (u64, u64));
 
 /// Taken counts of every wanted side in code this session has seen.
-fn taken(s: &Session, labels: &mut HashMap<B256, Option<String>>, wanted: &HashSet<(String, usize, bool)>) -> HashMap<(String, usize, bool), u64> {
+fn taken(
+    s: &Session,
+    labels: &mut HashMap<B256, Option<String>>,
+    wanted: &HashSet<(String, usize, bool)>,
+) -> HashMap<(String, usize, bool), u64> {
     let mut out = HashMap::new();
-    let Some(cov) = s.evm.inspector.coverage.as_ref() else { return out };
-    let codes: Vec<(B256, Vec<JumpCount>)> = cov.codes.iter().map(|c| (c.hash, c.jumps.iter().map(|(p, v)| (*p, *v)).collect())).collect();
+    let Some(cov) = s.evm.inspector.coverage.as_ref() else {
+        return out;
+    };
+    let codes: Vec<(B256, Vec<JumpCount>)> = cov
+        .codes
+        .iter()
+        .map(|c| (c.hash, c.jumps.iter().map(|(p, v)| (*p, *v)).collect()))
+        .collect();
     for (hash, jumps) in codes {
-        let Some(label) = label_of(s, labels, hash) else { continue };
+        let Some(label) = label_of(s, labels, hash) else {
+            continue;
+        };
         for (pc, (j, f)) in jumps {
             for (jumped, n) in [(true, j), (false, f)] {
                 let k = (label.clone(), pc, jumped);
@@ -444,17 +605,32 @@ fn explore_test(
     part: &mut Part,
 ) {
     let selector = keccak256(sig.as_bytes())[..4].to_vec();
-    let Ok(types) = DynSolType::parse(&sig[sig.find('(').unwrap()..]) else { return };
-    let mut rng = Rng(0x5eed_c0de_u64 ^ (test.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let Ok(types) = DynSolType::parse(&sig[sig.find('(').unwrap()..]) else {
+        return;
+    };
+    let mut rng =
+        Rng(0x5eed_c0de_u64 ^ (test.len() as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut domain = vec![];
     if let DynSolType::Tuple(ts) = &types {
         // The head: a dynamic parameter is one offset word there.
-        ts.iter().fold(4, |at, t| at + if t.is_dynamic() { 32 } else { padding(t, at, &mut domain) });
+        ts.iter().fold(4, |at, t| {
+            at + if t.is_dynamic() {
+                32
+            } else {
+                padding(t, at, &mut domain)
+            }
+        });
     }
     let mut queue: VecDeque<Vec<u8>> = VecDeque::new();
     // Seeds: all-zero arguments, then a few random ones.
     if let DynSolType::Tuple(ts) = &types {
-        let zero: Vec<DynSolValue> = ts.iter().map(|t| t.abi_decode(&[0u8; 64 * 32]).unwrap_or(DynSolValue::Uint(U256::ZERO, 256))).collect();
+        let zero: Vec<DynSolValue> = ts
+            .iter()
+            .map(|t| {
+                t.abi_decode(&[0u8; 64 * 32])
+                    .unwrap_or(DynSolValue::Uint(U256::ZERO, 256))
+            })
+            .collect();
         let mut d = selector.clone();
         d.extend(DynSolValue::Tuple(zero).abi_encode_params());
         queue.push_back(d);
@@ -479,10 +655,17 @@ fn explore_test(
         s.restore(ready);
         let shadow = Arc::new(Mutex::new(Shadow::new(Sym::default(), &data)));
         s.evm.inspector.extra = Some(Box::new(Shared(shadow.clone())));
-        let run = s.transact_quiet(sol_debug::SENDER, TxKind::Call(address), Bytes::from(data.clone()), U256::ZERO);
+        let run = s.transact_quiet(
+            sol_debug::SENDER,
+            TxKind::Call(address),
+            Bytes::from(data.clone()),
+            U256::ZERO,
+        );
         s.evm.inspector.extra = None;
         let Ok(run) = run else { continue };
-        let Ok(mut shadow) = Arc::try_unwrap(shadow).map(|m| m.into_inner().unwrap()) else { continue };
+        let Ok(mut shadow) = Arc::try_unwrap(shadow).map(|m| m.into_inner().unwrap()) else {
+            continue;
+        };
         part.mismatches += shadow.mismatches.len();
         part.stale += shadow.stale;
         for m in &shadow.mismatches {
@@ -491,15 +674,25 @@ fn explore_test(
         for c in &shadow.concretized {
             *part.pinned_ops.entry(c.op).or_default() += 1;
         }
-        let rejected = !run.success && coverage::reason(&run) == "sol-debug: vm.assume rejected the inputs";
+        let rejected =
+            !run.success && coverage::reason(&run) == "sol-debug: vm.assume rejected the inputs";
 
         // Which target sides did this concrete run take?
         let after = taken(s, labels, wanted);
         let args = show_args(sig, &data);
-        let failed = (!run.success && !rejected).then(|| sol_debug::agent::decode_revert(s, &run.output));
+        let failed =
+            (!run.success && !rejected).then(|| sol_debug::agent::decode_revert(s, &run.output));
         for (k, n) in &after {
             if *n > before.get(k).copied().unwrap_or(0) {
-                record(part, k.clone(), Outcome::Solved { test: test.to_string(), args: args.clone(), test_failed: failed.clone() });
+                record(
+                    part,
+                    k.clone(),
+                    Outcome::Solved {
+                        test: test.to_string(),
+                        args: args.clone(),
+                        test_failed: failed.clone(),
+                    },
+                );
             }
         }
         before = after;
@@ -508,20 +701,39 @@ fn explore_test(
                 // An input the solver produced makes the test fail: the test's claim doesn't hold for it.
                 let reduced = reduce_finding(s, ready, address, &selector, &types, &data, reason);
                 before = taken(s, labels, wanted);
-                part.findings.push(Finding { file: String::new(), test: test.to_string(), args: args.clone(), reduced, reason: reason.clone() });
+                part.findings.push(Finding {
+                    file: String::new(),
+                    test: test.to_string(),
+                    args: args.clone(),
+                    reduced,
+                    reason: reason.clone(),
+                });
             }
         }
 
         if std::env::var_os("CONCOLITY_DEBUG").is_some() {
-            eprintln!("run {runs} of {test} [{args}] ok={} decisions:", run.success);
+            eprintln!(
+                "run {runs} of {test} [{args}] ok={} decisions:",
+                run.success
+            );
             for d in &shadow.path {
-                eprintln!("  {:?} pc {} jumped={} cond: {}", label_of(s, labels, d.code), d.pc, d.jumped, crate::smt::term(&shadow.arena, d.cond));
+                eprintln!(
+                    "  {:?} pc {} jumped={} cond: {}",
+                    label_of(s, labels, d.code),
+                    d.pc,
+                    d.jumped,
+                    crate::smt::term(&shadow.arena, d.cond)
+                );
             }
             for c in &shadow.concretized {
-                eprintln!("  pinned at decision {}: op 0x{:02x} pc {} = {}", c.at, c.op, c.pc, c.value);
+                eprintln!(
+                    "  pinned at decision {}: op 0x{:02x} pc {} = {}",
+                    c.at, c.op, c.pc, c.value
+                );
             }
         }
-        let vars: HashMap<usize, crate::expr::ExprId> = shadow.calldata_vars.iter().map(|(v, b)| (*b, *v)).collect();
+        let vars: HashMap<usize, crate::expr::ExprId> =
+            shadow.calldata_vars.iter().map(|(v, b)| (*b, *v)).collect();
         // Leaves: each decision's other side, under the path before it.
         let path = shadow.path.clone();
         let mut prefix = std::collections::hash_map::DefaultHasher::new();
@@ -539,7 +751,9 @@ fn explore_test(
             if tried.contains(&key) {
                 continue;
             }
-            let target = label.as_ref().is_some_and(|l| wanted.contains(&(l.clone(), d.pc, !d.jumped)));
+            let target = label
+                .as_ref()
+                .is_some_and(|l| wanted.contains(&(l.clone(), d.pc, !d.jumped)));
             let new_side = !seen_sides.contains(&(d.code, d.pc, !d.jumped));
             if target || new_side {
                 tried.insert(key);
@@ -592,12 +806,25 @@ fn explore_test(
                 }
                 Ok(Answer::Unsat) => {
                     if let Some(k) = key.filter(|k| wanted.contains(k)) {
-                        record(part, k, Outcome::Unsat { test: test.to_string(), pinned });
+                        record(
+                            part,
+                            k,
+                            Outcome::Unsat {
+                                test: test.to_string(),
+                                pinned,
+                            },
+                        );
                     }
                 }
                 _ => {
                     if let Some(k) = key.filter(|k| wanted.contains(k)) {
-                        record(part, k, Outcome::Unknown { test: test.to_string() });
+                        record(
+                            part,
+                            k,
+                            Outcome::Unknown {
+                                test: test.to_string(),
+                            },
+                        );
                     }
                 }
             }
@@ -655,8 +882,19 @@ impl Report {
             count(|x| matches!(x, Outcome::InputsDontReach)),
             count(|x| matches!(x, Outcome::NotReached)),
         );
-        let _ = writeln!(o, "{} runs, {} solver calls, {} malformed solutions dropped, {:.1}s", self.runs, self.solver_calls, self.malformed, self.time.as_secs_f64());
-        let _ = writeln!(o, "model self-check mismatches: {} {:?}; stale shadows dropped: {}", self.mismatches, self.mismatch_ops, self.stale);
+        let _ = writeln!(
+            o,
+            "{} runs, {} solver calls, {} malformed solutions dropped, {:.1}s",
+            self.runs,
+            self.solver_calls,
+            self.malformed,
+            self.time.as_secs_f64()
+        );
+        let _ = writeln!(
+            o,
+            "model self-check mismatches: {} {:?}; stale shadows dropped: {}",
+            self.mismatches, self.mismatch_ops, self.stale
+        );
         let _ = writeln!(o, "values pinned, by opcode: {:?}\n", self.pinned_ops);
         let mut last = String::new();
         let (mut unreached, mut uninfluenced) = (0, 0);
@@ -678,17 +916,40 @@ impl Report {
                 last = side.file.clone();
             }
             let what = match out {
-                Outcome::Solved { test, args, test_failed } => format!(
+                Outcome::Solved {
+                    test,
+                    args,
+                    test_failed,
+                } => format!(
                     "solved    by {test} [{args}]{}",
-                    test_failed.as_ref().map(|r| format!("  (test fails: {r})")).unwrap_or_default()
+                    test_failed
+                        .as_ref()
+                        .map(|r| format!("  (test fails: {r})"))
+                        .unwrap_or_default()
                 ),
-                Outcome::Unsat { test, pinned } => format!("unsat{}  from {test}", if *pinned { " (under pinned values)" } else { "" }),
-                Outcome::Unknown { test } if test.is_empty() => "unknown   (reached symbolically, not solved within the budget)".into(),
+                Outcome::Unsat { test, pinned } => format!(
+                    "unsat{}  from {test}",
+                    if *pinned {
+                        " (under pinned values)"
+                    } else {
+                        ""
+                    }
+                ),
+                Outcome::Unknown { test } if test.is_empty() => {
+                    "unknown   (reached symbolically, not solved within the budget)".into()
+                }
                 Outcome::Unknown { test } => format!("unknown   (solver gave up, from {test})"),
                 Outcome::InputsDontReach => "inputs don't reach the condition".into(),
                 Outcome::NotReached => "not reached".into(),
             };
-            let _ = writeln!(o, "  :{:<5} {:<24} pc {:<6} {:<4}  {what}", side.line, side.code, side.pc, if side.jumped { "jump" } else { "fall" });
+            let _ = writeln!(
+                o,
+                "  :{:<5} {:<24} pc {:<6} {:<4}  {what}",
+                side.line,
+                side.code,
+                side.pc,
+                if side.jumped { "jump" } else { "fall" }
+            );
         }
         if unreached + uninfluenced > 0 {
             let _ = writeln!(o, "\n(not listed: {unreached} sides no harness ran, {uninfluenced} where the harnesses' inputs don't decide the branch; --json lists them)");

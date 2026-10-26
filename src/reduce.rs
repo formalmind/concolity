@@ -7,8 +7,16 @@ use alloy_dyn_abi::DynSolValue;
 use revm::primitives::{Address, U256};
 
 /// Reduces `args` (a call's arguments) while `fails` holds. `budget` caps the runs.
-pub fn reduce(args: Vec<DynSolValue>, budget: usize, fails: &mut dyn FnMut(&[DynSolValue]) -> bool) -> (Vec<DynSolValue>, usize) {
-    let mut r = Reducer { runs: 0, budget, fails };
+pub fn reduce(
+    args: Vec<DynSolValue>,
+    budget: usize,
+    fails: &mut dyn FnMut(&[DynSolValue]) -> bool,
+) -> (Vec<DynSolValue>, usize) {
+    let mut r = Reducer {
+        runs: 0,
+        budget,
+        fails,
+    };
     let mut args = args;
     // Passes until nothing changes: simplifying one argument can let another shrink further.
     loop {
@@ -36,7 +44,11 @@ struct Reducer<'a> {
 
 impl Reducer<'_> {
     /// Whether the whole call with `v` in place still fails.
-    fn try_(&mut self, v: &DynSolValue, place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>) -> bool {
+    fn try_(
+        &mut self,
+        v: &DynSolValue,
+        place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>,
+    ) -> bool {
         if self.runs >= self.budget {
             return false;
         }
@@ -45,7 +57,11 @@ impl Reducer<'_> {
         (self.fails)(&call)
     }
 
-    fn value(&mut self, v: DynSolValue, place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>) -> DynSolValue {
+    fn value(
+        &mut self,
+        v: DynSolValue,
+        place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>,
+    ) -> DynSolValue {
         use DynSolValue as V;
         match v {
             V::Uint(x, n) => V::Uint(self.number(x, &mut |y| V::Uint(y, n), place), n),
@@ -86,12 +102,22 @@ impl Reducer<'_> {
             }
             V::Bytes(b) => {
                 let items: Vec<V> = b.iter().map(|x| V::Uint(U256::from(*x), 8)).collect();
-                let kept = self.ddmin(items, &mut |xs: &[V]| V::Bytes(xs.iter().map(byte).collect()), place);
+                let kept = self.ddmin(
+                    items,
+                    &mut |xs: &[V]| V::Bytes(xs.iter().map(byte).collect()),
+                    place,
+                );
                 V::Bytes(kept.iter().map(byte).collect())
             }
             V::String(s) => {
                 let items: Vec<V> = s.chars().map(|c| V::String(c.to_string())).collect();
-                let join = |xs: &[V]| V::String(xs.iter().filter_map(|x| x.as_str().map(str::to_string)).collect::<String>());
+                let join = |xs: &[V]| {
+                    V::String(
+                        xs.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect::<String>(),
+                    )
+                };
                 let kept = self.ddmin(items, &mut |xs: &[V]| join(xs), place);
                 join(&kept)
             }
@@ -106,7 +132,12 @@ impl Reducer<'_> {
     }
 
     /// Reduces each element of a list in place (the list's length stays).
-    fn each(&mut self, xs: Vec<DynSolValue>, wrap: fn(Vec<DynSolValue>) -> DynSolValue, place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>) -> Vec<DynSolValue> {
+    fn each(
+        &mut self,
+        xs: Vec<DynSolValue>,
+        wrap: fn(Vec<DynSolValue>) -> DynSolValue,
+        place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>,
+    ) -> Vec<DynSolValue> {
         let mut xs = xs;
         for i in 0..xs.len() {
             let snapshot = xs.clone();
@@ -123,7 +154,12 @@ impl Reducer<'_> {
 
     /// A number as small as it can be: 0, 1, then bisection between 0 and it (the boundary, when failing is monotone
     /// in it: a threshold), then each set bit from the top cleared if it still fails (when it isn't).
-    fn number(&mut self, x: U256, make: &mut dyn FnMut(U256) -> DynSolValue, place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>) -> U256 {
+    fn number(
+        &mut self,
+        x: U256,
+        make: &mut dyn FnMut(U256) -> DynSolValue,
+        place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>,
+    ) -> U256 {
         if x.is_zero() {
             return x;
         }
@@ -156,7 +192,12 @@ impl Reducer<'_> {
     }
 
     /// ddmin: drops chunks of the list (halves, quarters, …, single elements) while it still fails.
-    fn ddmin(&mut self, xs: Vec<DynSolValue>, wrap: &mut dyn FnMut(&[DynSolValue]) -> DynSolValue, place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>) -> Vec<DynSolValue> {
+    fn ddmin(
+        &mut self,
+        xs: Vec<DynSolValue>,
+        wrap: &mut dyn FnMut(&[DynSolValue]) -> DynSolValue,
+        place: &mut dyn FnMut(DynSolValue) -> Vec<DynSolValue>,
+    ) -> Vec<DynSolValue> {
         let mut xs = xs;
         let mut n = 2;
         while xs.len() >= 2 || (xs.len() == 1 && n == 2) {
@@ -207,7 +248,11 @@ mod tests {
     #[test]
     fn a_threshold_reduces_to_its_boundary() {
         // Fails when a > 1000: bisection lands on the boundary.
-        let (out, runs) = reduce(vec![u(123_456), u(77)], 2000, &mut |a| matches!(&a[0], V::Uint(x, _) if *x > U256::from(1000)));
+        let (out, runs) = reduce(
+            vec![u(123_456), u(77)],
+            2000,
+            &mut |a| matches!(&a[0], V::Uint(x, _) if *x > U256::from(1000)),
+        );
         assert_eq!(out[1], u(0), "the other argument doesn't matter");
         let V::Uint(a, _) = &out[0] else { panic!() };
         assert_eq!(*a, U256::from(1001));
@@ -217,13 +262,24 @@ mod tests {
     #[test]
     fn a_list_keeps_only_the_element_that_matters() {
         let list = V::Array((0..20).map(u).collect());
-        let (out, _) = reduce(vec![list], 5000, &mut |a| matches!(&a[0], V::Array(xs) if xs.contains(&u(13))));
+        let (out, _) = reduce(
+            vec![list],
+            5000,
+            &mut |a| matches!(&a[0], V::Array(xs) if xs.contains(&u(13))),
+        );
         assert_eq!(out[0], V::Array(vec![u(13)]));
     }
 
     #[test]
     fn signs_and_booleans() {
-        let (out, _) = reduce(vec![V::Int(revm::primitives::I256::try_from(-500).unwrap(), 256), V::Bool(true)], 2000, &mut |a| matches!(&a[0], V::Int(x, _) if x.unsigned_abs() >= U256::from(7)));
+        let (out, _) = reduce(
+            vec![
+                V::Int(revm::primitives::I256::try_from(-500).unwrap(), 256),
+                V::Bool(true),
+            ],
+            2000,
+            &mut |a| matches!(&a[0], V::Int(x, _) if x.unsigned_abs() >= U256::from(7)),
+        );
         assert_eq!(out[1], V::Bool(false));
         let V::Int(x, _) = &out[0] else { panic!() };
         assert!(!x.is_negative() && x.unsigned_abs() == U256::from(7), "{x}");

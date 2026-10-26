@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 pub type Version = (u64, u64, u64);
 
 fn parse_version(s: &str) -> Option<Version> {
-    let mut it = s.trim().trim_start_matches('v').split('.').map(|p| p.trim().parse::<u64>().ok());
+    let mut it = s
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|p| p.trim().parse::<u64>().ok());
     let major = it.next()??;
     let minor = it.next().flatten().unwrap_or(0);
     let patch = it.next().flatten().unwrap_or(0);
@@ -23,7 +27,9 @@ fn satisfies_one(v: Version, c: &str) -> bool {
         .iter()
         .find_map(|op| c.strip_prefix(op).map(|r| (*op, r)))
         .unwrap_or(("=", c));
-    let Some(w) = parse_version(rest) else { return true };
+    let Some(w) = parse_version(rest) else {
+        return true;
+    };
     match op {
         // ^0.8.18: same minor for 0.x (Solidity's versions are all 0.x).
         "^" => {
@@ -46,7 +52,13 @@ fn satisfies_one(v: Version, c: &str) -> bool {
 pub fn satisfies(v: Version, pragma: &str) -> bool {
     pragma.split("||").any(|alt| {
         // `>= 0.8.0` has a space after the operator: glue operators to their versions first.
-        let glued = alt.replace(">= ", ">=").replace("<= ", "<=").replace("> ", ">").replace("< ", "<").replace("^ ", "^").replace("= ", "=");
+        let glued = alt
+            .replace(">= ", ">=")
+            .replace("<= ", "<=")
+            .replace("> ", ">")
+            .replace("< ", "<")
+            .replace("^ ", "^")
+            .replace("= ", "=");
         glued.split_whitespace().all(|c| satisfies_one(v, c))
     })
 }
@@ -55,7 +67,11 @@ pub fn satisfies(v: Version, pragma: &str) -> bool {
 pub fn installed() -> Vec<Version> {
     let home = std::env::var("HOME").unwrap_or_default();
     let mut out: Vec<Version> = vec![];
-    for dir in [format!("{home}/Library/Application Support/svm"), format!("{home}/.svm"), format!("{home}/.local/share/svm")] {
+    for dir in [
+        format!("{home}/Library/Application Support/svm"),
+        format!("{home}/.svm"),
+        format!("{home}/.local/share/svm"),
+    ] {
         for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if let Some(v) = parse_version(&name) {
@@ -97,7 +113,11 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         r.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(b.0.len().cmp(&a.0.len())));
-        Resolver { root, remappings: r, pragmas: HashMap::new() }
+        Resolver {
+            root,
+            remappings: r,
+            pragmas: HashMap::new(),
+        }
     }
 
     /// An import path as seen from `from` (both relative to the root).
@@ -117,7 +137,9 @@ impl<'a> Resolver<'a> {
         }
         let from_s = from.to_string_lossy();
         for (ctx, prefix, target) in &self.remappings {
-            if (ctx.is_empty() || from_s.starts_with(ctx.as_str())) && import.starts_with(prefix.as_str()) {
+            if (ctx.is_empty() || from_s.starts_with(ctx.as_str()))
+                && import.starts_with(prefix.as_str())
+            {
                 return PathBuf::from(format!("{target}{}", &import[prefix.len()..]));
             }
         }
@@ -126,13 +148,19 @@ impl<'a> Resolver<'a> {
 
     /// The pragmas and imports of one file.
     fn read(&self, file: &Path) -> (Vec<String>, Vec<String>) {
-        let Ok(text) = std::fs::read_to_string(self.root.join(file)) else { return (vec![], vec![]) };
+        let Ok(text) = std::fs::read_to_string(self.root.join(file)) else {
+            return (vec![], vec![]);
+        };
         let mut pragmas = vec![];
         let mut imports = vec![];
         for stmt in text.split(';') {
             let s = stmt.trim();
             // Skip comments before the statement.
-            let s = s.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join(" ");
+            let s = s
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(" ");
             let s = s.trim();
             if let Some(p) = s.strip_prefix("pragma solidity") {
                 pragmas.push(p.trim().to_string());
@@ -176,7 +204,12 @@ impl<'a> Resolver<'a> {
 
 /// Files grouped by the solc that compiles them (None: no installed version satisfies the pragmas; those files are
 /// reported and left out).
-pub fn group(root: &Path, remappings: &[String], files: &[String], pinned: Option<&str>) -> BTreeMap<Option<String>, Vec<String>> {
+pub fn group(
+    root: &Path,
+    remappings: &[String],
+    files: &[String],
+    pinned: Option<&str>,
+) -> BTreeMap<Option<String>, Vec<String>> {
     let mut out: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
     if let Some(v) = pinned {
         out.insert(Some(v.to_string()), files.to_vec());
@@ -186,7 +219,10 @@ pub fn group(root: &Path, remappings: &[String], files: &[String], pinned: Optio
     let mut r = Resolver::new(root, remappings);
     for f in files {
         let pragmas = r.closure(Path::new(f));
-        let v = versions.iter().find(|v| pragmas.iter().all(|p| satisfies(**v, p))).map(|v| show(*v));
+        let v = versions
+            .iter()
+            .find(|v| pragmas.iter().all(|p| satisfies(**v, p)))
+            .map(|v| show(*v));
         out.entry(v).or_default().push(f.clone());
     }
     out

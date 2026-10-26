@@ -10,13 +10,13 @@
 use alloy_dyn_abi::{DynSolType, DynSolValue};
 use anyhow::{Context as _, Result};
 use revm::primitives::{keccak256, Address, I256, U256};
+use sol_debug::session::Snapshot;
 use sol_debug::session::{encode_call, CodeKind, SENDER};
 use sol_debug::solc::{CodeMap, Settings};
 use sol_debug::trace::{Callee, Coverage};
-use sol_debug::session::Snapshot;
 use sol_debug::Session;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -65,12 +65,19 @@ pub struct FileCoverage {
 
 impl FileCoverage {
     pub fn lines_hit(&self) -> (usize, usize) {
-        (self.lines.values().filter(|n| **n > 0).count(), self.lines.len())
+        (
+            self.lines.values().filter(|n| **n > 0).count(),
+            self.lines.len(),
+        )
     }
 
     /// Branch sides taken, of all sides (two per `JUMPI`).
     pub fn sides_hit(&self) -> (usize, usize) {
-        let hit = self.branches.values().map(|(j, f)| (*j > 0) as usize + (*f > 0) as usize).sum();
+        let hit = self
+            .branches
+            .values()
+            .map(|(j, f)| (*j > 0) as usize + (*f > 0) as usize)
+            .sum();
         (hit, 2 * self.branches.len())
     }
 }
@@ -122,13 +129,24 @@ pub struct Report {
 pub type Branches = Vec<(String, usize, String, usize, u64, u64)>;
 
 fn fnv64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// What a suite's result depends on: the commit, every change to tracked files and the untracked files (by size and
 /// time). None outside git.
 pub fn tree_key(root: &Path) -> Option<String> {
-    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(root).args(args).output().ok().filter(|o| o.status.success()).map(|o| o.stdout);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout)
+    };
     let head = git(&["rev-parse", "HEAD"])?;
     // Submodules (lib/, dependencies/) are left out: they're pinned by the commit, and a broken one shouldn't stop the cache.
     let diff = git(&["diff", "HEAD", "--binary", "--ignore-submodules=all"])?;
@@ -139,31 +157,80 @@ pub fn tree_key(root: &Path) -> Option<String> {
             stamp.extend_from_slice(f);
             stamp.extend_from_slice(&m.len().to_le_bytes());
             if let Ok(t) = m.modified() {
-                stamp.extend_from_slice(&t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().to_le_bytes());
+                stamp.extend_from_slice(
+                    &t.duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .to_le_bytes(),
+                );
             }
         }
     }
-    Some(format!("{:016x}{:016x}{:016x}", fnv64(&head), fnv64(&diff), fnv64(&stamp)))
+    Some(format!(
+        "{:016x}{:016x}{:016x}",
+        fnv64(&head),
+        fnv64(&diff),
+        fnv64(&stamp)
+    ))
 }
 
-/// The suite's branch map, from the cache (~/.cache/formalmind/coverage) when the code and the options haven't changed
-/// since a run, so explore doesn't run the whole suite again for every question.
-pub fn branches(opts: &Options) -> Result<Branches> {
-    let key = tree_key(&opts.root).map(|t| format!("{t}-{:016x}", fnv64(format!("{}|{:?}|{:?}|{}|{}", opts.test_dir, opts.skip, opts.include, opts.fuzz_runs, opts.fast).as_bytes())));
+/// Where the suite's branch map is cached (~/.cache/formalmind/coverage), by the project's real path, the tree and the
+/// options. None outside git.
+fn branches_file(opts: &Options) -> Option<PathBuf> {
+    let key = tree_key(&opts.root).map(|t| {
+        format!(
+            "{t}-{:016x}",
+            fnv64(
+                format!(
+                    "{}|{:?}|{:?}|{}|{}",
+                    opts.test_dir, opts.skip, opts.include, opts.fuzz_runs, opts.fast
+                )
+                .as_bytes()
+            )
+        )
+    });
     // The project by its real path: `.` and /abs/path are the same project.
     let real = std::fs::canonicalize(&opts.root).unwrap_or_else(|_| opts.root.clone());
-    let file = key.and_then(|k| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/formalmind/coverage").join(format!("{:016x}", fnv64(real.to_string_lossy().as_bytes()))).join(format!("{k}.json"))));
-    if let Some(hit) = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok()) {
+    key.and_then(|k| {
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join(".cache/formalmind/coverage")
+                .join(format!("{:016x}", fnv64(real.to_string_lossy().as_bytes())))
+                .join(format!("{k}.json"))
+        })
+    })
+}
+
+/// The suite's branch map, from the cache when the code and the options haven't changed since a run, so explore
+/// doesn't run the whole suite again for every question.
+pub fn branches(opts: &Options) -> Result<Branches> {
+    if let Some(hit) = branches_file(opts)
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .and_then(|t| serde_json::from_str::<Branches>(&t).ok())
+    {
         eprintln!("coverage: cached (the code hasn't changed)");
         return Ok(hit);
     }
-    let report = run(opts)?;
-    let out: Branches = report.files.iter().flat_map(|(file, f)| f.branches.iter().map(move |((line, code, pc), (j, fl))| (file.clone(), *line, code.clone(), *pc, *j, *fl))).collect();
-    if let Some(f) = &file {
+    Ok(remember(opts, &run(opts)?))
+}
+
+/// Caches a run's branch map for `branches`, so a caller that ran the suite itself (the desktop app's coverage) makes
+/// the next `--at` or explore instant.
+pub fn remember(opts: &Options, report: &Report) -> Branches {
+    let out: Branches = report
+        .files
+        .iter()
+        .flat_map(|(file, f)| {
+            f.branches.iter().map(move |((line, code, pc), (j, fl))| {
+                (file.clone(), *line, code.clone(), *pc, *j, *fl)
+            })
+        })
+        .collect();
+    if let Some(f) = branches_file(opts) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, serde_json::to_string(&out).unwrap_or_default());
     }
-    Ok(out)
+    out
 }
 
 /// forge's test filters from foundry.toml's default profile (`match_test`, `no_match_test`, `match_contract`,
@@ -178,10 +245,18 @@ pub(crate) struct Filters {
 
 impl Filters {
     pub(crate) fn from_foundry(root: &Path) -> Filters {
-        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return Filters::default() };
-        let Ok(doc) = text.parse::<toml::Table>() else { return Filters::default() };
+        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else {
+            return Filters::default();
+        };
+        let Ok(doc) = text.parse::<toml::Table>() else {
+            return Filters::default();
+        };
         let p = doc.get("profile").and_then(|p| p.get("default"));
-        let re = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).and_then(|r| regex::Regex::new(r).ok());
+        let re = |k: &str| {
+            p.and_then(|p| p.get(k))
+                .and_then(|v| v.as_str())
+                .and_then(|r| regex::Regex::new(r).ok())
+        };
         Filters {
             match_test: re("match_test"),
             no_match_test: re("no_match_test"),
@@ -196,13 +271,25 @@ impl Filters {
         if self.match_test.as_ref().is_some_and(|r| !r.is_match(name)) {
             return Some("foundry.toml match_test");
         }
-        if self.no_match_test.as_ref().is_some_and(|r| r.is_match(name)) {
+        if self
+            .no_match_test
+            .as_ref()
+            .is_some_and(|r| r.is_match(name))
+        {
             return Some("foundry.toml no_match_test");
         }
-        if self.match_contract.as_ref().is_some_and(|r| !r.is_match(contract)) {
+        if self
+            .match_contract
+            .as_ref()
+            .is_some_and(|r| !r.is_match(contract))
+        {
             return Some("foundry.toml match_contract");
         }
-        if self.no_match_contract.as_ref().is_some_and(|r| r.is_match(contract)) {
+        if self
+            .no_match_contract
+            .as_ref()
+            .is_some_and(|r| r.is_match(contract))
+        {
             return Some("foundry.toml no_match_contract");
         }
         None
@@ -218,10 +305,20 @@ pub(crate) struct Permissions {
 
 impl Permissions {
     pub(crate) fn from_foundry(root: &Path) -> Permissions {
-        let none = Permissions { ffi: false, writable: vec![], readable: vec![] };
-        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return none };
-        let Ok(doc) = text.parse::<toml::Table>() else { return none };
-        let Some(p) = doc.get("profile").and_then(|p| p.get("default")) else { return none };
+        let none = Permissions {
+            ffi: false,
+            writable: vec![],
+            readable: vec![],
+        };
+        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else {
+            return none;
+        };
+        let Ok(doc) = text.parse::<toml::Table>() else {
+            return none;
+        };
+        let Some(p) = doc.get("profile").and_then(|p| p.get("default")) else {
+            return none;
+        };
         let with = |ok: &dyn Fn(&str) -> bool| -> Vec<PathBuf> {
             p.get("fs_permissions")
                 .and_then(|v| v.as_array())
@@ -248,12 +345,16 @@ pub(crate) fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String>
     let mut out = vec![];
     let mut stack = vec![root.join(dir)];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().is_some_and(|e| e == "sol") && !p.to_string_lossy().ends_with(".s.sol") {
+            } else if p.extension().is_some_and(|e| e == "sol")
+                && !p.to_string_lossy().ends_with(".s.sol")
+            {
                 // forge runs test contracts from any Solidity file in the test folder, scripts aside.
                 let rel = p.strip_prefix(root).unwrap().to_string_lossy().to_string();
                 if !skip.iter().any(|s| rel.contains(s.as_str())) {
@@ -268,17 +369,29 @@ pub(crate) fn test_files(root: &Path, dir: &str, skip: &[String]) -> Vec<String>
 
 /// The suite's solc output, from `~/.cache/formalmind/solc/` when nothing it depends on changed: the key hashes the
 /// solc version, the settings, the entry files and the content of every `.sol` file in the project.
-pub(crate) fn compile_cached(project: &formal_ast::solc::Project, entries: &[String], settings: &Settings) -> Result<serde_json::Value> {
-    let mut key = format!("{:?}|{:?}|{:?}|{:?}|{entries:?}", project.solc_version, project.evm_version, settings, project.remappings);
+pub(crate) fn compile_cached(
+    project: &formal_ast::solc::Project,
+    entries: &[String],
+    settings: &Settings,
+) -> Result<serde_json::Value> {
+    let mut key = format!(
+        "{:?}|{:?}|{:?}|{:?}|{entries:?}",
+        project.solc_version, project.evm_version, settings, project.remappings
+    );
     let mut sols = vec![];
     let mut stack = vec![project.root.clone()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
             if p.is_dir() {
-                if !matches!(name.as_str(), "out" | "cache" | "node_modules" | ".git" | "broadcast" | "target") {
+                if !matches!(
+                    name.as_str(),
+                    "out" | "cache" | "node_modules" | ".git" | "broadcast" | "target"
+                ) {
                     stack.push(p);
                 }
             } else if name.ends_with(".sol") {
@@ -294,7 +407,12 @@ pub(crate) fn compile_cached(project: &formal_ast::solc::Project, entries: &[Str
     }
     key.push_str(&revm::primitives::hex::encode(keccak256(&h)));
     let dir = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/formalmind/solc"));
-    let file = dir.as_ref().map(|d| d.join(format!("{}.json", revm::primitives::hex::encode(&keccak256(key.as_bytes())[..16]))));
+    let file = dir.as_ref().map(|d| {
+        d.join(format!(
+            "{}.json",
+            revm::primitives::hex::encode(&keccak256(key.as_bytes())[..16])
+        ))
+    });
     if let Some(f) = &file {
         if let Ok(text) = std::fs::read(f) {
             if let Ok(v) = serde_json::from_slice(&text) {
@@ -302,7 +420,8 @@ pub(crate) fn compile_cached(project: &formal_ast::solc::Project, entries: &[Str
             }
         }
     }
-    let output = sol_debug::solc::compile_entries(project, entries, settings).context("compiling the suite")?;
+    let output = sol_debug::solc::compile_entries(project, entries, settings)
+        .context("compiling the suite")?;
     if let (Some(d), Some(f)) = (&dir, &file) {
         if std::fs::create_dir_all(d).is_ok() {
             let _ = std::fs::write(f, serde_json::to_vec(&output).unwrap_or_default());
@@ -328,7 +447,11 @@ impl Rng {
 
     /// Mostly edge values and small numbers, sometimes anything: what finds boundaries.
     fn uint(&mut self, bits: usize) -> U256 {
-        let max = if bits == 256 { U256::MAX } else { (U256::from(1) << bits) - U256::from(1) };
+        let max = if bits == 256 {
+            U256::MAX
+        } else {
+            (U256::from(1) << bits) - U256::from(1)
+        };
         let v = match self.next() % 8 {
             0 => U256::ZERO,
             1 => U256::from(1),
@@ -359,11 +482,25 @@ impl Rng {
                 w[*n..].fill(0);
                 DynSolValue::FixedBytes(w.into(), *n)
             }
-            DynSolType::Bytes => DynSolValue::Bytes((0..self.next() % 70).map(|_| self.next() as u8).collect()),
-            DynSolType::String => DynSolValue::String((0..self.next() % 20).map(|_| (b'a' + (self.next() % 26) as u8) as char).collect()),
-            DynSolType::Array(inner) => DynSolValue::Array((0..self.next() % 4).map(|_| self.value(inner)).collect::<Option<_>>()?),
-            DynSolType::FixedArray(inner, n) => DynSolValue::FixedArray((0..*n).map(|_| self.value(inner)).collect::<Option<_>>()?),
-            DynSolType::Tuple(ts) => DynSolValue::Tuple(ts.iter().map(|t| self.value(t)).collect::<Option<_>>()?),
+            DynSolType::Bytes => {
+                DynSolValue::Bytes((0..self.next() % 70).map(|_| self.next() as u8).collect())
+            }
+            DynSolType::String => DynSolValue::String(
+                (0..self.next() % 20)
+                    .map(|_| (b'a' + (self.next() % 26) as u8) as char)
+                    .collect(),
+            ),
+            DynSolType::Array(inner) => DynSolValue::Array(
+                (0..self.next() % 4)
+                    .map(|_| self.value(inner))
+                    .collect::<Option<_>>()?,
+            ),
+            DynSolType::FixedArray(inner, n) => {
+                DynSolValue::FixedArray((0..*n).map(|_| self.value(inner)).collect::<Option<_>>()?)
+            }
+            DynSolType::Tuple(ts) => {
+                DynSolValue::Tuple(ts.iter().map(|t| self.value(t)).collect::<Option<_>>()?)
+            }
             _ => return None,
         })
     }
@@ -378,19 +515,32 @@ pub(crate) fn test_functions(s: &Session, i: usize, test_dir: &str) -> Vec<Strin
     // forge 1.x no longer runs `testFail*` functions as tests.
     a.methods
         .values()
-        .filter(|sig| (sig.starts_with("test") && !sig.starts_with("testFail")) || sig.starts_with("invariant") || sig.starts_with("statefulFuzz"))
+        .filter(|sig| {
+            (sig.starts_with("test") && !sig.starts_with("testFail"))
+                || sig.starts_with("invariant")
+                || sig.starts_with("statefulFuzz")
+        })
         .cloned()
         .collect()
 }
 
 pub(crate) fn reason(run: &sol_debug::Run) -> String {
-    run.revert_reason().unwrap_or_else(|| format!("0x{}", revm::primitives::hex::encode(&run.output[..run.output.len().min(68)])))
+    run.revert_reason().unwrap_or_else(|| {
+        format!(
+            "0x{}",
+            revm::primitives::hex::encode(&run.output[..run.output.len().min(68)])
+        )
+    })
 }
 
 pub fn run(opts: &Options) -> Result<Report> {
     let started = Instant::now();
     let files = test_files(&opts.root, &opts.test_dir, &opts.skip);
-    anyhow::ensure!(!files.is_empty(), "no *.t.sol files under {}", opts.root.join(&opts.test_dir).display());
+    anyhow::ensure!(
+        !files.is_empty(),
+        "no *.t.sol files under {}",
+        opts.root.join(&opts.test_dir).display()
+    );
     let mut settings = Settings::from_foundry(&opts.root);
     if opts.fast {
         settings.optimizer = None;
@@ -404,12 +554,20 @@ pub fn run(opts: &Options) -> Result<Report> {
     // Files that need different compilers can't share a solc run: one group per version, each with a share of the
     // cores in proportion to its files.
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
-    let groups = crate::versions::group(&opts.root, &project.remappings, &files, project.solc_version.as_deref());
+    let groups = crate::versions::group(
+        &opts.root,
+        &project.remappings,
+        &files,
+        project.solc_version.as_deref(),
+    );
     let mut work: Vec<(formal_ast::solc::Project, Vec<String>)> = vec![];
     let mut compile_errors: Vec<String> = vec![];
     for (version, group) in &groups {
         let Some(v) = version else {
-            compile_errors.push(format!("no installed solc satisfies the pragmas of: {}", group.join(", ")));
+            compile_errors.push(format!(
+                "no installed solc satisfies the pragmas of: {}",
+                group.join(", ")
+            ));
             continue;
         };
         let mut p = project.clone();
@@ -427,7 +585,13 @@ pub fn run(opts: &Options) -> Result<Report> {
                 scope.spawn(move || worker(project, settings, batch, test_dir, opts))
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a coverage worker died")))).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("a coverage worker died")))
+            })
+            .collect()
     });
 
     let mut tests = vec![];
@@ -452,7 +616,13 @@ pub fn run(opts: &Options) -> Result<Report> {
             }
         }
         for b in p.bindings {
-            let e = bindings.entry((b.site.clone(), b.callee.clone())).or_insert(Binding { count: 0, empty: BTreeSet::new(), ..b.clone() });
+            let e = bindings
+                .entry((b.site.clone(), b.callee.clone()))
+                .or_insert(Binding {
+                    count: 0,
+                    empty: BTreeSet::new(),
+                    ..b.clone()
+                });
             e.count += b.count;
             e.empty.extend(b.empty);
         }
@@ -473,10 +643,13 @@ pub fn run(opts: &Options) -> Result<Report> {
     Ok(Report {
         files: files_cov,
         tests,
-        bindings: bindings.into_values().map(|mut b| {
-            b.settle();
-            b
-        }).collect(),
+        bindings: bindings
+            .into_values()
+            .map(|mut b| {
+                b.settle();
+                b
+            })
+            .collect(),
         unsupported,
         foreign_code,
         compile_errors,
@@ -497,7 +670,10 @@ struct Part {
 
 /// Test files in `n` batches of about equal size (largest first, each to the lightest batch).
 pub(crate) fn batches(root: &Path, files: &[String], n: usize) -> Vec<Vec<String>> {
-    let mut sized: Vec<(u64, &String)> = files.iter().map(|f| (std::fs::metadata(root.join(f)).map_or(0, |m| m.len()), f)).collect();
+    let mut sized: Vec<(u64, &String)> = files
+        .iter()
+        .map(|f| (std::fs::metadata(root.join(f)).map_or(0, |m| m.len()), f))
+        .collect();
     sized.sort_by(|a, b| b.cmp(a));
     let n = n.clamp(1, files.len().max(1));
     let mut out: Vec<(u64, Vec<String>)> = vec![(0, vec![]); n];
@@ -506,41 +682,78 @@ pub(crate) fn batches(root: &Path, files: &[String], n: usize) -> Vec<Vec<String
         lightest.0 += size;
         lightest.1.push(f.clone());
     }
-    out.into_iter().map(|(_, b)| b).filter(|b| !b.is_empty()).collect()
+    out.into_iter()
+        .map(|(_, b)| b)
+        .filter(|b| !b.is_empty())
+        .collect()
 }
 
 /// One batch; when it doesn't compile, each of its files on its own, so the failure is pinned to the file.
-fn worker(project: &formal_ast::solc::Project, settings: &Settings, batch: &[String], test_dir: &str, opts: &Options) -> Result<Part> {
+fn worker(
+    project: &formal_ast::solc::Project,
+    settings: &Settings,
+    batch: &[String],
+    test_dir: &str,
+    opts: &Options,
+) -> Result<Part> {
     let started = Instant::now();
-    let units: Vec<(Vec<String>, serde_json::Value)> = match compile_cached(project, batch, settings) {
-        Ok(out) => vec![(batch.to_vec(), out)],
-        Err(_) if batch.len() > 1 => {
-            let mut units = vec![];
-            let mut errors = vec![];
-            for f in batch {
-                match compile_cached(project, std::slice::from_ref(f), settings) {
-                    Ok(out) => units.push((vec![f.clone()], out)),
-                    Err(e) => errors.push(format!("{f}: {:#}", e)),
+    let units: Vec<(Vec<String>, serde_json::Value)> =
+        match compile_cached(project, batch, settings) {
+            Ok(out) => vec![(batch.to_vec(), out)],
+            Err(_) if batch.len() > 1 => {
+                let mut units = vec![];
+                let mut errors = vec![];
+                for f in batch {
+                    match compile_cached(project, std::slice::from_ref(f), settings) {
+                        Ok(out) => units.push((vec![f.clone()], out)),
+                        Err(e) => errors.push(format!("{f}: {:#}", e)),
+                    }
                 }
+                if units.is_empty() {
+                    return Ok(Part {
+                        errors,
+                        tests: vec![],
+                        files: BTreeMap::new(),
+                        bindings: vec![],
+                        foreign: 0,
+                        compile: started.elapsed(),
+                    });
+                }
+                let mut part = run_units(project, units, test_dir, opts, started)?;
+                part.errors.extend(errors);
+                return Ok(part);
             }
-            if units.is_empty() {
-                return Ok(Part { errors, tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile: started.elapsed() });
+            Err(e) => {
+                return Ok(Part {
+                    errors: vec![format!("{}: {:#}", batch.join(", "), e)],
+                    tests: vec![],
+                    files: BTreeMap::new(),
+                    bindings: vec![],
+                    foreign: 0,
+                    compile: started.elapsed(),
+                });
             }
-            let mut part = run_units(project, units, test_dir, opts, started)?;
-            part.errors.extend(errors);
-            return Ok(part);
-        }
-        Err(e) => {
-            return Ok(Part { errors: vec![format!("{}: {:#}", batch.join(", "), e)], tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile: started.elapsed() });
-        }
-    };
+        };
     run_units(project, units, test_dir, opts, started)
 }
 
 /// Runs the tests of compiled units (each its files and solc output), and maps their coverage.
-fn run_units(project: &formal_ast::solc::Project, units: Vec<(Vec<String>, serde_json::Value)>, test_dir: &str, opts: &Options, started: Instant) -> Result<Part> {
+fn run_units(
+    project: &formal_ast::solc::Project,
+    units: Vec<(Vec<String>, serde_json::Value)>,
+    test_dir: &str,
+    opts: &Options,
+    started: Instant,
+) -> Result<Part> {
     let compile = started.elapsed();
-    let mut all = Part { errors: vec![], tests: vec![], files: BTreeMap::new(), bindings: vec![], foreign: 0, compile };
+    let mut all = Part {
+        errors: vec![],
+        tests: vec![],
+        files: BTreeMap::new(),
+        bindings: vec![],
+        foreign: 0,
+        compile,
+    };
     for (batch, output) in units {
         let p = run_unit(project, &batch, &output, test_dir, opts)?;
         all.tests.extend(p.tests);
@@ -561,7 +774,13 @@ fn run_units(project: &formal_ast::solc::Project, units: Vec<(Vec<String>, serde
     Ok(all)
 }
 
-fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serde_json::Value, test_dir: &str, opts: &Options) -> Result<Part> {
+fn run_unit(
+    project: &formal_ast::solc::Project,
+    batch: &[String],
+    output: &serde_json::Value,
+    test_dir: &str,
+    opts: &Options,
+) -> Result<Part> {
     let compile = Duration::ZERO;
     let permissions = Permissions::from_foundry(&project.root);
     let new_session = || -> Result<Session> {
@@ -588,13 +807,29 @@ fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serd
     let mut results = vec![];
     for (i, fns) in &contracts {
         let mut rng = Rng(0x5eed_c0de_u64 ^ (*i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-        match catch_unwind(AssertUnwindSafe(|| run_contract(&mut s, &fresh, *i, fns, opts.fuzz_runs, &mut rng))) {
-            Ok(r) => results.extend(r.into_iter().map(|t| TestResult { file: s.artifacts[*i].file.clone(), ..t })),
+        match catch_unwind(AssertUnwindSafe(|| {
+            run_contract(&mut s, &fresh, *i, fns, opts.fuzz_runs, &mut rng)
+        })) {
+            Ok(r) => results.extend(r.into_iter().map(|t| TestResult {
+                file: s.artifacts[*i].file.clone(),
+                ..t
+            })),
             Err(panic) => {
-                let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|m| m.to_string())).unwrap_or_default();
+                let msg = panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|m| m.to_string()))
+                    .unwrap_or_default();
                 let name = s.artifacts[*i].name.clone();
                 for f in fns {
-                    results.push(TestResult { file: s.artifacts[*i].file.clone(), contract: name.clone(), test: f.clone(), status: Status::Fail(format!("the runner panicked: {msg}")), runs: 0, rejected: 0 });
+                    results.push(TestResult {
+                        file: s.artifacts[*i].file.clone(),
+                        contract: name.clone(),
+                        test: f.clone(),
+                        status: Status::Fail(format!("the runner panicked: {msg}")),
+                        runs: 0,
+                        rejected: 0,
+                    });
                 }
                 // The EVM may be mid-transaction: start over, keeping what coverage has seen.
                 let cov = s.evm.inspector.coverage.take();
@@ -606,11 +841,25 @@ fn run_unit(project: &formal_ast::solc::Project, batch: &[String], output: &serd
     }
     let cov = s.evm.inspector.coverage.take().unwrap_or_default();
     let (files, bindings, foreign) = map_coverage(&s, &cov, &opts.include);
-    Ok(Part { errors: vec![], tests: results, files, bindings, foreign, compile })
+    Ok(Part {
+        errors: vec![],
+        tests: results,
+        files,
+        bindings,
+        foreign,
+        compile,
+    })
 }
 
 /// One test contract: deployed and set up once, then each test from that state (each fuzz run too).
-fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuzz_runs: u32, rng: &mut Rng) -> Vec<TestResult> {
+fn run_contract(
+    s: &mut Session,
+    fresh: &Snapshot,
+    i: usize,
+    fns: &[String],
+    fuzz_runs: u32,
+    rng: &mut Rng,
+) -> Vec<TestResult> {
     let a = &s.artifacts[i];
     let contract = format!("{}:{}", a.file, a.name);
     let short = a.name.clone();
@@ -624,14 +873,38 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
             // `setUp()`, and the tests not run.
             if e.contains("createFork inside a test") {
                 let status = Status::Skipped("needs a fork (createFork)".into());
-                return fns.iter().map(|f| TestResult { file: String::new(), contract: short.clone(), test: f.clone(), status: status.clone(), runs: 0, rejected: 0 }).collect();
+                return fns
+                    .iter()
+                    .map(|f| TestResult {
+                        file: String::new(),
+                        contract: short.clone(),
+                        test: f.clone(),
+                        status: status.clone(),
+                        runs: 0,
+                        rejected: 0,
+                    })
+                    .collect();
             }
             // `vm.skip(true)` in setUp: forge reports one skipped `setUp()`.
             if let Some(at) = e.find("sol-debug: skip") {
                 let why = format!("vm.skip{}", e[at..].trim_start_matches("sol-debug: skip"));
-                return vec![TestResult { file: String::new(), contract: short.clone(), test: "setUp()".into(), status: Status::Skipped(why), runs: 0, rejected: 0 }];
+                return vec![TestResult {
+                    file: String::new(),
+                    contract: short.clone(),
+                    test: "setUp()".into(),
+                    status: Status::Skipped(why),
+                    runs: 0,
+                    rejected: 0,
+                }];
             }
-            return vec![TestResult { file: String::new(), contract: short.clone(), test: "setUp()".into(), status: Status::Fail(format!("setUp: {e}")), runs: 0, rejected: 0 }];
+            return vec![TestResult {
+                file: String::new(),
+                contract: short.clone(),
+                test: "setUp()".into(),
+                status: Status::Fail(format!("setUp: {e}")),
+                runs: 0,
+                rejected: 0,
+            }];
         }
     };
     let ready = s.snapshot();
@@ -639,11 +912,25 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
     for sig in fns {
         let name = &sig[..sig.find('(').unwrap()];
         if let Some(why) = filters.excludes(&short, sig) {
-            tests.push(TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Skipped(why.into()), runs: 0, rejected: 0 });
+            tests.push(TestResult {
+                file: String::new(),
+                contract: short.clone(),
+                test: sig.clone(),
+                status: Status::Skipped(why.into()),
+                runs: 0,
+                rejected: 0,
+            });
             continue;
         }
         if name.starts_with("invariant") || name.starts_with("statefulFuzz") {
-            tests.push(TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Skipped("invariant campaign".into()), runs: 0, rejected: 0 });
+            tests.push(TestResult {
+                file: String::new(),
+                contract: short.clone(),
+                test: sig.clone(),
+                status: Status::Skipped("invariant campaign".into()),
+                runs: 0,
+                rejected: 0,
+            });
             continue;
         }
         let params = &sig[sig.find('(').unwrap()..];
@@ -651,16 +938,28 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
         let types = DynSolType::parse(params).ok();
         let fuzz = params != "()";
         let runs = if fuzz { fuzz_runs } else { 1 };
-        let mut result = TestResult { file: String::new(), contract: short.clone(), test: sig.clone(), status: Status::Pass, runs: 0, rejected: 0 };
+        let mut result = TestResult {
+            file: String::new(),
+            contract: short.clone(),
+            test: sig.clone(),
+            status: Status::Pass,
+            runs: 0,
+            rejected: 0,
+        };
         for _ in 0..runs {
             let mut shown = String::new();
             let data = if fuzz {
-                let Some(DynSolValue::Tuple(args)) = types.as_ref().and_then(|t| rng.value(t)) else {
+                let Some(DynSolValue::Tuple(args)) = types.as_ref().and_then(|t| rng.value(t))
+                else {
                     result.status = Status::Skipped(format!("can't generate {params}"));
                     break;
                 };
                 // The counterexample, as `--arg` values for `concolity debug`.
-                shown = args.iter().map(sol_debug::session::show_value).collect::<Vec<_>>().join(" ");
+                shown = args
+                    .iter()
+                    .map(sol_debug::session::show_value)
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 let mut d = keccak256(sig.as_bytes())[..4].to_vec();
                 d.extend(DynSolValue::Tuple(args).abi_encode_params());
                 d
@@ -668,7 +967,12 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
                 encode_call(sig, &[]).unwrap_or_default()
             };
             s.restore(&ready);
-            let run = match s.transact_quiet(SENDER, revm::primitives::TxKind::Call(address), data.into(), U256::ZERO) {
+            let run = match s.transact_quiet(
+                SENDER,
+                revm::primitives::TxKind::Call(address),
+                data.into(),
+                U256::ZERO,
+            ) {
                 Ok(r) => r,
                 Err(e) => {
                     result.status = Status::Fail(e.to_string());
@@ -682,16 +986,26 @@ fn run_contract(s: &mut Session, fresh: &Snapshot, i: usize, fns: &[String], fuz
                 continue;
             }
             if let Some(w) = why.as_deref().filter(|w| w.starts_with("sol-debug: skip")) {
-                result.status = Status::Skipped(format!("vm.skip{}", w.trim_start_matches("sol-debug: skip")));
+                result.status = Status::Skipped(format!(
+                    "vm.skip{}",
+                    w.trim_start_matches("sol-debug: skip")
+                ));
                 break;
             }
-            if why.as_deref().is_some_and(|w| w.contains("createFork inside a test")) {
+            if why
+                .as_deref()
+                .is_some_and(|w| w.contains("createFork inside a test"))
+            {
                 result.status = Status::Skipped("needs a fork (createFork)".into());
                 break;
             }
             if run.success == fail_expected {
                 let why = why.unwrap_or_else(|| "testFail didn't revert".into());
-                result.status = Status::Fail(if fuzz { format!("{why} [args: {shown}]") } else { why });
+                result.status = Status::Fail(if fuzz {
+                    format!("{why} [args: {shown}]")
+                } else {
+                    why
+                });
                 break;
             }
         }
@@ -705,7 +1019,11 @@ fn locate(s: &Session, map: &CodeMap, pc: usize) -> Option<(String, usize, (i64,
     let (entry, _) = map.at_pc(pc);
     let entry = entry.filter(|e| e.has_source())?;
     let file = s.sources.files.get(&entry.file)?;
-    Some((file.name.clone(), file.line(entry.start as usize), (entry.file, entry.start as usize, entry.length as usize)))
+    Some((
+        file.name.clone(),
+        file.line(entry.start as usize),
+        (entry.file, entry.start as usize, entry.length as usize),
+    ))
 }
 
 /// Statements, Solidity and Yul: a line, for coverage, is where one of these starts (as forge counts them).
@@ -713,8 +1031,18 @@ fn is_statement(t: &str) -> bool {
     t.ends_with("Statement")
         || matches!(
             t,
-            "Return" | "Break" | "Continue" | "InlineAssembly" | "YulAssignment" | "YulVariableDeclaration" | "YulIf"
-                | "YulForLoop" | "YulSwitch" | "YulLeave" | "YulBreak" | "YulContinue"
+            "Return"
+                | "Break"
+                | "Continue"
+                | "InlineAssembly"
+                | "YulAssignment"
+                | "YulVariableDeclaration"
+                | "YulIf"
+                | "YulForLoop"
+                | "YulSwitch"
+                | "YulLeave"
+                | "YulBreak"
+                | "YulContinue"
         )
 }
 
@@ -731,15 +1059,29 @@ struct StatementLines<'a> {
 
 impl<'a> StatementLines<'a> {
     fn new(s: &'a Session) -> Self {
-        let mut spans: std::collections::HashMap<i64, Vec<(usize, usize, usize)>> = std::collections::HashMap::new();
+        let mut spans: std::collections::HashMap<i64, Vec<(usize, usize, usize)>> =
+            std::collections::HashMap::new();
         for n in &s.sources.nodes {
-            if is_statement(&n.node_type) || matches!(n.node_type.as_str(), "FunctionDefinition" | "ModifierDefinition") {
+            if is_statement(&n.node_type)
+                || matches!(
+                    n.node_type.as_str(),
+                    "FunctionDefinition" | "ModifierDefinition"
+                )
+            {
                 if let Some(f) = s.sources.files.get(&n.file) {
-                    spans.entry(n.file).or_default().push((n.start, n.start + n.length, f.line(n.start)));
+                    spans.entry(n.file).or_default().push((
+                        n.start,
+                        n.start + n.length,
+                        f.line(n.start),
+                    ));
                 }
             }
         }
-        StatementLines { s, spans, memo: std::collections::HashMap::new() }
+        StatementLines {
+            s,
+            spans,
+            memo: std::collections::HashMap::new(),
+        }
     }
 
     fn line(&mut self, src: (i64, usize, usize)) -> Option<usize> {
@@ -749,7 +1091,10 @@ impl<'a> StatementLines<'a> {
         let (file, start, len) = src;
         let end = start + len;
         let l = self.spans.get(&file).and_then(|v| {
-            v.iter().filter(|(a, b, _)| *a <= start && end <= *b).min_by_key(|(a, b, _)| b - a).map(|(_, _, line)| *line)
+            v.iter()
+                .filter(|(a, b, _)| *a <= start && end <= *b)
+                .min_by_key(|(a, b, _)| b - a)
+                .map(|(_, _, line)| *line)
         });
         let _ = self.s;
         self.memo.insert(src, l);
@@ -757,30 +1102,59 @@ impl<'a> StatementLines<'a> {
     }
 }
 
-fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<String, FileCoverage>, Vec<Binding>, usize) {
-    let included = |f: &str| include.is_empty() || include.iter().any(|p| f.starts_with(p.as_str()));
+fn map_coverage(
+    s: &Session,
+    cov: &Coverage,
+    include: &[String],
+) -> (BTreeMap<String, FileCoverage>, Vec<Binding>, usize) {
+    let included =
+        |f: &str| include.is_empty() || include.iter().any(|p| f.starts_with(p.as_str()));
     let mut files: BTreeMap<String, FileCoverage> = BTreeMap::new();
     let mut statements = StatementLines::new(s);
     // Every artifact's code from an included file is instrumented, run or not; hits are added below.
-    let maps = |i: usize, k: CodeKind| if k == CodeKind::Init { &s.artifacts[i].init } else { &s.artifacts[i].runtime };
+    let maps = |i: usize, k: CodeKind| {
+        if k == CodeKind::Init {
+            &s.artifacts[i].init
+        } else {
+            &s.artifacts[i].runtime
+        }
+    };
     let mut add = |i: usize, kind: CodeKind, hits: Option<&sol_debug::trace::CodeHits>| {
         let map = maps(i, kind);
         let mut per_code: BTreeMap<(String, usize), u64> = BTreeMap::new();
-        let label = format!("{}{}", s.artifacts[i].name, if kind == CodeKind::Init { " (init)" } else { "" });
+        let label = format!(
+            "{}{}",
+            s.artifacts[i].name,
+            if kind == CodeKind::Init {
+                " (init)"
+            } else {
+                ""
+            }
+        );
         for &pc in &map.ix_to_pc {
-            let Some((file, _, src)) = locate(s, map, pc) else { continue };
+            let Some((file, _, src)) = locate(s, map, pc) else {
+                continue;
+            };
             if !included(&file) {
                 continue;
             }
-            let Some(line) = statements.line(src) else { continue };
+            let Some(line) = statements.line(src) else {
+                continue;
+            };
             // A line ran as many times as its most-run instruction (summed over the codes it is compiled into).
             let n = hits.and_then(|h| h.pcs.get(pc)).copied().unwrap_or(0) as u64;
             let e = per_code.entry((file.clone(), line)).or_insert(0);
             *e = (*e).max(n);
             let fc = files.entry(file).or_default();
             if map.code.get(pc) == Some(&revm::bytecode::opcode::JUMPI) {
-                let (j, f) = hits.and_then(|h| h.jumps.get(&pc)).copied().unwrap_or((0, 0));
-                let b = fc.branches.entry((line, label.clone(), pc)).or_insert((0, 0));
+                let (j, f) = hits
+                    .and_then(|h| h.jumps.get(&pc))
+                    .copied()
+                    .unwrap_or((0, 0));
+                let b = fc
+                    .branches
+                    .entry((line, label.clone(), pc))
+                    .or_insert((0, 0));
                 b.0 += j;
                 b.1 += f;
             }
@@ -806,8 +1180,13 @@ fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<St
     }
     // Bindings, by call site.
     let site = |c: usize, pc: usize| match identity[c] {
-        Some((i, k)) => locate(s, maps(i, k), pc).map(|(f, l, _)| format!("{f}:{l}")).unwrap_or_else(|| format!("{} pc {pc}", s.artifacts[i].name)),
-        None => format!("code {} pc {pc}", &revm::primitives::hex::encode(cov.codes[c].hash)[..8]),
+        Some((i, k)) => locate(s, maps(i, k), pc)
+            .map(|(f, l, _)| format!("{f}:{l}"))
+            .unwrap_or_else(|| format!("{} pc {pc}", s.artifacts[i].name)),
+        None => format!(
+            "code {} pc {pc}",
+            &revm::primitives::hex::encode(cov.codes[c].hash)[..8]
+        ),
     };
     let mut by_site: BTreeMap<(String, String), (bool, u64)> = BTreeMap::new();
     let mut empty_targets: BTreeMap<String, BTreeSet<Address>> = BTreeMap::new();
@@ -821,7 +1200,13 @@ fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<St
             Callee::Code(k) => match identity[*k] {
                 Some((i, CodeKind::Runtime)) => (s.artifacts[i].name.clone(), false),
                 Some((i, CodeKind::Init)) => (format!("new {}", s.artifacts[i].name), false),
-                None => (format!("code {}", &revm::primitives::hex::encode(cov.codes[*k].hash)[..8]), false),
+                None => (
+                    format!(
+                        "code {}",
+                        &revm::primitives::hex::encode(cov.codes[*k].hash)[..8]
+                    ),
+                    false,
+                ),
             },
             Callee::NoCode(_) => ("no code".to_string(), true),
             Callee::Precompile(a) => (format!("precompile {a}"), false),
@@ -833,8 +1218,19 @@ fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<St
     let bindings = by_site
         .into_iter()
         .map(|((site, callee), (missing, count))| {
-            let empty = if missing { empty_targets.get(&site).cloned().unwrap_or_default() } else { BTreeSet::new() };
-            Binding { site, callee, missing, varying: false, empty, count }
+            let empty = if missing {
+                empty_targets.get(&site).cloned().unwrap_or_default()
+            } else {
+                BTreeSet::new()
+            };
+            Binding {
+                site,
+                callee,
+                missing,
+                varying: false,
+                empty,
+                count,
+            }
         })
         .collect();
     (files, bindings, foreign)
@@ -853,14 +1249,27 @@ pub fn against_forge(report: &Report, forge_json: &serde_json::Value) -> Vec<Str
         }
     }
     let mut out = vec![];
-    let here: BTreeSet<(String, String)> = report.tests.iter().map(|t| (t.contract.clone(), t.test.clone())).collect();
+    let here: BTreeSet<(String, String)> = report
+        .tests
+        .iter()
+        .map(|t| (t.contract.clone(), t.test.clone()))
+        .collect();
     for (contract, test) in forge.keys().filter(|k| !here.contains(*k)) {
         out.push(format!("{contract}::{test}  forge: ran  here: not found"));
     }
     for t in &report.tests {
         let Some((ok, reason)) = forge.get(&(t.contract.clone(), t.test.clone())) else {
             if !matches!(t.status, Status::Skipped(_)) {
-                out.push(format!("{}::{}  forge: not run  here: {}", t.contract, t.test, if t.status == Status::Pass { "pass" } else { "fail" }));
+                out.push(format!(
+                    "{}::{}  forge: not run  here: {}",
+                    t.contract,
+                    t.test,
+                    if t.status == Status::Pass {
+                        "pass"
+                    } else {
+                        "fail"
+                    }
+                ));
             }
             continue;
         };
@@ -878,8 +1287,16 @@ pub fn against_forge(report: &Report, forge_json: &serde_json::Value) -> Vec<Str
                 "{}::{}  forge: {}  here: {}",
                 t.contract,
                 t.test,
-                if *ok { "pass".to_string() } else { format!("fail ({reason})") },
-                if ours == Some(true) { "pass".to_string() } else { format!("fail ({why})") }
+                if *ok {
+                    "pass".to_string()
+                } else {
+                    format!("fail ({reason})")
+                },
+                if ours == Some(true) {
+                    "pass".to_string()
+                } else {
+                    format!("fail ({why})")
+                }
             ));
         }
     }
@@ -978,15 +1395,43 @@ impl Report {
         for (name, f) in &self.files {
             let (lh, ln) = f.lines_hit();
             let (bh, bn) = f.sides_hit();
-            let _ = writeln!(o, "{name:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}", pct(lh, ln), pct(bh, bn));
+            let _ = writeln!(
+                o,
+                "{name:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}",
+                pct(lh, ln),
+                pct(bh, bn)
+            );
         }
         let ((lh, ln), (bh, bn)) = self.totals();
-        let _ = writeln!(o, "{:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}", "Total", pct(lh, ln), pct(bh, bn));
+        let _ = writeln!(
+            o,
+            "{:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}",
+            "Total",
+            pct(lh, ln),
+            pct(bh, bn)
+        );
 
-        let missing: Vec<_> = self.bindings.iter().filter(|b| b.missing && !b.varying).collect();
-        let varying: Vec<_> = self.bindings.iter().filter(|b| b.missing && b.varying).collect();
-        let sites = self.bindings.iter().map(|b| &b.site).collect::<BTreeSet<_>>().len();
-        let _ = writeln!(o, "\nbindings: {sites} call sites, {} with missing bytecode", missing.len());
+        let missing: Vec<_> = self
+            .bindings
+            .iter()
+            .filter(|b| b.missing && !b.varying)
+            .collect();
+        let varying: Vec<_> = self
+            .bindings
+            .iter()
+            .filter(|b| b.missing && b.varying)
+            .collect();
+        let sites = self
+            .bindings
+            .iter()
+            .map(|b| &b.site)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let _ = writeln!(
+            o,
+            "\nbindings: {sites} call sites, {} with missing bytecode",
+            missing.len()
+        );
         for b in &missing {
             let _ = writeln!(o, "  MISSING  {}  → {}  ({}×)", b.site, b.callee, b.count);
         }
@@ -1002,7 +1447,11 @@ impl Report {
             }
         }
         if self.foreign_code > 0 {
-            let _ = writeln!(o, "  {} pieces of code ran that this compile didn't produce (etched or mocked)", self.foreign_code);
+            let _ = writeln!(
+                o,
+                "  {} pieces of code ran that this compile didn't produce (etched or mocked)",
+                self.foreign_code
+            );
         }
         if !self.unsupported.is_empty() {
             let _ = writeln!(o, "\nunsupported cheatcodes, by failed tests:");
@@ -1020,7 +1469,10 @@ impl Report {
         let mut skipped: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for t in &self.tests {
             if let Status::Skipped(why) = &t.status {
-                skipped.entry(why.as_str()).or_default().push(format!("{}::{}", t.contract, t.test));
+                skipped
+                    .entry(why.as_str())
+                    .or_default()
+                    .push(format!("{}::{}", t.contract, t.test));
             }
         }
         if !skipped.is_empty() {
@@ -1032,7 +1484,11 @@ impl Report {
                 }
             }
         }
-        let failed: Vec<_> = self.tests.iter().filter(|t| matches!(t.status, Status::Fail(_))).collect();
+        let failed: Vec<_> = self
+            .tests
+            .iter()
+            .filter(|t| matches!(t.status, Status::Fail(_)))
+            .collect();
         if !failed.is_empty() {
             let _ = writeln!(o, "\nfailed:");
             for t in failed {

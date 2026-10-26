@@ -18,12 +18,42 @@ struct Rule {
 }
 
 const RULES: [Rule; 6] = [
-    Rule { id: "concolity/test-fails-on-solved-input", name: "TestFailsOnSolvedInput", level: "error", text: "A fuzz test fails on inputs the solver found: its claim doesn't hold for them" },
-    Rule { id: "concolity/test-fails", name: "TestFails", level: "error", text: "A test fails" },
-    Rule { id: "concolity/missing-bytecode", name: "MissingBytecode", level: "warning", text: "A call into an address with no code: the test checks nothing past it" },
-    Rule { id: "concolity/unreachable-side", name: "UnreachableSide", level: "note", text: "No input to the harness takes this side of the branch (unsat)" },
-    Rule { id: "concolity/solved-side", name: "SolvedSide", level: "none", text: "No test took this side of the branch; the solver found inputs that do" },
-    Rule { id: "concolity/untaken-side", name: "UntakenSide", level: "none", text: "No test takes this side of the branch" },
+    Rule {
+        id: "concolity/test-fails-on-solved-input",
+        name: "TestFailsOnSolvedInput",
+        level: "error",
+        text: "A fuzz test fails on inputs the solver found: its claim doesn't hold for them",
+    },
+    Rule {
+        id: "concolity/test-fails",
+        name: "TestFails",
+        level: "error",
+        text: "A test fails",
+    },
+    Rule {
+        id: "concolity/missing-bytecode",
+        name: "MissingBytecode",
+        level: "warning",
+        text: "A call into an address with no code: the test checks nothing past it",
+    },
+    Rule {
+        id: "concolity/unreachable-side",
+        name: "UnreachableSide",
+        level: "note",
+        text: "No input to the harness takes this side of the branch (unsat)",
+    },
+    Rule {
+        id: "concolity/solved-side",
+        name: "SolvedSide",
+        level: "none",
+        text: "No test took this side of the branch; the solver found inputs that do",
+    },
+    Rule {
+        id: "concolity/untaken-side",
+        name: "UntakenSide",
+        level: "none",
+        text: "No test takes this side of the branch",
+    },
 ];
 
 fn rule(id: &str) -> &'static Rule {
@@ -60,7 +90,10 @@ fn run(id: &str, results: Vec<Value>) -> Value {
 fn function_line(root: &Path, file: &str, test: &str) -> usize {
     let name = test.split('(').next().unwrap_or(test);
     let needle = format!("function {name}(");
-    std::fs::read_to_string(root.join(file)).ok().and_then(|t| t.lines().position(|l| l.contains(&needle)).map(|i| i + 1)).unwrap_or(1)
+    std::fs::read_to_string(root.join(file))
+        .ok()
+        .and_then(|t| t.lines().position(|l| l.contains(&needle)).map(|i| i + 1))
+        .unwrap_or(1)
 }
 
 /// `src/AsyncSwap.sol:212` as (file, line).
@@ -76,19 +109,40 @@ pub fn coverage_run(root: &Path, r: &coverage::Report) -> Value {
     for t in &r.tests {
         if let Status::Fail(why) = &t.status {
             let line = function_line(root, &t.file, &t.test);
-            out.push(result("concolity/test-fails", &t.file, line, format!("{}::{} fails: {why}", t.contract, t.test), json!({ "test": format!("{}::{}", t.contract, t.test), "reason": why })));
+            out.push(result(
+                "concolity/test-fails",
+                &t.file,
+                line,
+                format!("{}::{} fails: {why}", t.contract, t.test),
+                json!({ "test": format!("{}::{}", t.contract, t.test), "reason": why }),
+            ));
         }
     }
     for b in r.bindings.iter().filter(|b| b.missing && !b.varying) {
         if let Some((file, line)) = site(&b.site) {
-            out.push(result("concolity/missing-bytecode", file, line, format!("This call reaches {} ({} calls): nothing past it is tested", b.callee, b.count), json!({ "callee": b.callee, "count": b.count })));
+            out.push(result(
+                "concolity/missing-bytecode",
+                file,
+                line,
+                format!(
+                    "This call reaches {} ({} calls): nothing past it is tested",
+                    b.callee, b.count
+                ),
+                json!({ "callee": b.callee, "count": b.count }),
+            ));
         }
     }
     for (file, f) in &r.files {
         for ((line, code, pc), (j, fl)) in &f.branches {
             for (n, side) in [(*j, "jump"), (*fl, "fall")] {
                 if n == 0 {
-                    out.push(result("concolity/untaken-side", file, *line, format!("No test takes the {side} side of this branch ({code} pc {pc})"), json!({ "side": side, "code": code, "pc": pc })));
+                    out.push(result(
+                        "concolity/untaken-side",
+                        file,
+                        *line,
+                        format!("No test takes the {side} side of this branch ({code} pc {pc})"),
+                        json!({ "side": side, "code": code, "pc": pc }),
+                    ));
                 }
             }
         }
@@ -103,7 +157,10 @@ pub fn explore_run(root: &Path, r: &explore::Report) -> Value {
         let solved = r.targets.iter().find(|(_, o)| matches!(o, Outcome::Solved { test, args, test_failed: Some(_) } if *test == f.test && *args == f.args));
         let (file, line) = match solved {
             Some((side, _)) => (side.file.clone(), side.line),
-            None => (f.file.clone(), function_line(root, &f.file, f.test.split("::").nth(1).unwrap_or(&f.test))),
+            None => (
+                f.file.clone(),
+                function_line(root, &f.file, f.test.split("::").nth(1).unwrap_or(&f.test)),
+            ),
         };
         out.push(result(
             "concolity/test-fails-on-solved-input",
@@ -138,9 +195,14 @@ pub fn explore_run(root: &Path, r: &explore::Report) -> Value {
 
 /// Writes `run` into the SARIF file at `path`, replacing the run with the same `automationDetails.id`.
 pub fn write(path: &Path, run: Value) -> Result<()> {
-    let mut doc: Value = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| json!({ "$schema": SCHEMA, "version": "2.1.0", "runs": [] }));
+    let mut doc: Value = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_else(|| json!({ "$schema": SCHEMA, "version": "2.1.0", "runs": [] }));
     let id = run["automationDetails"]["id"].clone();
-    let runs = doc["runs"].as_array_mut().context("not a SARIF file: no runs")?;
+    let runs = doc["runs"]
+        .as_array_mut()
+        .context("not a SARIF file: no runs")?;
     runs.retain(|r| r["automationDetails"]["id"] != id);
     runs.push(run);
     if let Some(dir) = path.parent() {
@@ -160,10 +222,28 @@ mod tests {
         let path = dir.join("findings.sarif");
         let _ = std::fs::remove_file(&path);
         write(&path, run("swarm", vec![])).unwrap();
-        write(&path, run("concolity/explore", vec![result("concolity/unreachable-side", "src/A.sol", 3, "x".into(), json!({ "side": "jump" }))])).unwrap();
+        write(
+            &path,
+            run(
+                "concolity/explore",
+                vec![result(
+                    "concolity/unreachable-side",
+                    "src/A.sol",
+                    3,
+                    "x".into(),
+                    json!({ "side": "jump" }),
+                )],
+            ),
+        )
+        .unwrap();
         write(&path, run("concolity/explore", vec![])).unwrap();
         let doc: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let ids: Vec<_> = doc["runs"].as_array().unwrap().iter().map(|r| r["automationDetails"]["id"].as_str().unwrap().to_string()).collect();
+        let ids: Vec<_> = doc["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["automationDetails"]["id"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(ids, ["swarm/", "concolity/explore/"]);
         assert!(doc["runs"][1]["results"].as_array().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
@@ -171,7 +251,10 @@ mod tests {
 
     #[test]
     fn sites_parse() {
-        assert_eq!(site("src/AsyncSwap.sol:212"), Some(("src/AsyncSwap.sol", 212)));
+        assert_eq!(
+            site("src/AsyncSwap.sol:212"),
+            Some(("src/AsyncSwap.sol", 212))
+        );
         assert_eq!(site("0xdead"), None);
     }
 }

@@ -56,7 +56,13 @@ pub struct Chain {
 impl Default for Chain {
     fn default() -> Self {
         let mut db = CacheDB::new(EmptyDB::default());
-        db.insert_account_info(SENDER, AccountInfo { balance: U256::from(10).pow(U256::from(30)), ..Default::default() });
+        db.insert_account_info(
+            SENDER,
+            AccountInfo {
+                balance: U256::from(10).pow(U256::from(30)),
+                ..Default::default()
+            },
+        );
         Chain { db }
     }
 }
@@ -64,18 +70,21 @@ impl Default for Chain {
 impl Chain {
     /// Puts runtime code at an address.
     pub fn etch(&mut self, at: Address, code: &[u8]) {
-        let info = AccountInfo::default().with_code(Bytecode::new_raw(Bytes::copy_from_slice(code)));
+        let info =
+            AccountInfo::default().with_code(Bytecode::new_raw(Bytes::copy_from_slice(code)));
         self.db.insert_account_info(at, info);
     }
 
     /// One transaction from `SENDER` to `to`, under the Shadow inspector. The chain doesn't change.
     pub fn run(&self, to: Address, calldata: Bytes, value: U256, sym: Sym) -> Result<Run> {
         let shadow = Shadow::new(sym, &calldata);
-        let ctx = Context::mainnet().with_db(self.db.clone()).modify_cfg_chained(|cfg| {
-            cfg.spec = SpecId::OSAKA;
-            cfg.disable_nonce_check = true;
-            cfg.tx_gas_limit_cap = Some(u64::MAX);
-        });
+        let ctx = Context::mainnet()
+            .with_db(self.db.clone())
+            .modify_cfg_chained(|cfg| {
+                cfg.spec = SpecId::OSAKA;
+                cfg.disable_nonce_check = true;
+                cfg.tx_gas_limit_cap = Some(u64::MAX);
+            });
         let mut evm = ctx.build_mainnet_with_inspector(shadow);
         let tx = TxEnv::builder()
             .caller(SENDER)
@@ -84,12 +93,21 @@ impl Chain {
             .value(value)
             .gas_limit(30_000_000)
             .build_fill();
-        let result = evm.inspect_tx(tx).map_err(|e| anyhow!("transaction failed to run: {e:?}"))?;
+        let result = evm
+            .inspect_tx(tx)
+            .map_err(|e| anyhow!("transaction failed to run: {e:?}"))?;
         let outcome = match result.result {
-            ExecutionResult::Success { output: Output::Call(b) | Output::Create(b, _), .. } => Outcome::Return(b),
+            ExecutionResult::Success {
+                output: Output::Call(b) | Output::Create(b, _),
+                ..
+            } => Outcome::Return(b),
             ExecutionResult::Revert { output, .. } => Outcome::Revert(output),
             ExecutionResult::Halt { reason, .. } => Outcome::Halt(format!("{reason:?}")),
         };
-        Ok(Run { calldata, outcome, shadow: evm.inspector })
+        Ok(Run {
+            calldata,
+            outcome,
+            shadow: evm.inspector,
+        })
     }
 }

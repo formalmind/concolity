@@ -81,7 +81,12 @@ pub fn term(arena: &Arena, id: ExprId) -> String {
             let (a, b, n) = (e(a), e(b), e(n));
             let (ext, op) = if *mul { (256, "bvmul") } else { (1, "bvadd") };
             let x = |s: &str| format!("((_ zero_extend {ext}) {s})");
-            format!("(ite (= {n} {z}) {z} ((_ extract 255 0) (bvurem ({op} {} {}) {})))", x(&a), x(&b), x(&n))
+            format!(
+                "(ite (= {n} {z}) {z} ((_ extract 255 0) (bvurem ({op} {} {}) {})))",
+                x(&a),
+                x(&b),
+                x(&n)
+            )
         }
         Node::Not(a) => format!("(bvnot {})", e(a)),
         Node::Cmp(op, a, b) => {
@@ -158,7 +163,12 @@ impl Solver {
             .with_context(|| format!("starting {bin} (install z3, or set CONCOLITY_Z3)"))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut s = Solver { child, stdin, stdout, defined: 0 };
+        let mut s = Solver {
+            child,
+            stdin,
+            stdout,
+            defined: 0,
+        };
         s.send("(set-option :print-success false)\n(set-logic QF_BV)\n")?;
         Ok(s)
     }
@@ -209,7 +219,9 @@ impl Solver {
                 let vars = arena.vars();
                 let mut values = vec![U256::ZERO; vars.len()];
                 if !vars.is_empty() {
-                    let names: Vec<String> = (0..vars.len()).map(|i| format!("e{}", arena.var_node(i).0)).collect();
+                    let names: Vec<String> = (0..vars.len())
+                        .map(|i| format!("e{}", arena.var_node(i).0))
+                        .collect();
                     self.send(&format!("(get-value ({}))\n", names.join(" ")))?;
                     let model = self.read()?;
                     for (name, v) in parse_values(&model)? {
@@ -241,7 +253,9 @@ fn parse_values(s: &str) -> Result<Vec<(String, U256)>> {
     let flat = s.replace(['(', ')'], " ");
     let mut tokens = flat.split_whitespace();
     while let Some(name) = tokens.next() {
-        let v = tokens.next().ok_or_else(|| anyhow!("no value for {name} in {s}"))?;
+        let v = tokens
+            .next()
+            .ok_or_else(|| anyhow!("no value for {name} in {s}"))?;
         let value = if let Some(h) = v.strip_prefix("#x") {
             U256::from_str_radix(h, 16)?
         } else if let Some(b) = v.strip_prefix("#b") {
