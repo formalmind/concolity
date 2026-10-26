@@ -82,6 +82,18 @@ Gaps this turned up (in the suite, not the contracts):
   levels for a few dozen orders: same-level books almost never happen, so the fix was barely exercised even by a
   correct invariant. A second handler that packs submissions around one price makes them happen.
 
+### Fuzzer benchmark: the price book's mutants (2026-10-26, fead63f)
+
+`concolity bench`, 30 operator mutants of RadixPriceTree, EligiblePrice and TickPrice, 65 fuzz tests, 2 s each
+(case-studies/async-swap/BENCH-2026-10-26.md). Kills: forge 23, concolity 22, concolity with the solver off 23, none
+unique, no false kills. forge's coverage-guided mode crashed on all 30 (stack overflow). Coverage of the original:
+concolity 306 sides, forge's corpus 240. Leads from the survivors:
+
+| Where | What | Status |
+|---|---|---|
+| `TickPrice.floorTick` regimes (`num / den` against `1 << 64` and `1 << 128`) | Mutating either division into a multiplication survives every fuzz test. With `*`, amounts multiplying past 2^128 would map to the end key, so no fuzz test checks `key` against the exact price for large amounts. | open: write the property test (large amounts, ordered by cross-multiplied price) |
+| `RadixPriceTree.sol:54` `bit > splitBit` | `>=` survives. Either no insert path has a branch at the split bit (an invariant worth stating), or the tests don't reach one. | open |
+
 What was missing in the tools:
 - **concolity has no invariant or sequence runner.** Matching-engine bugs live in sequences (submit, partial fill,
   reprice, cancel, match); explore works on one call's arguments. The hunt used forge's invariant campaigns, run in
