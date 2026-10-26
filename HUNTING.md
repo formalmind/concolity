@@ -82,6 +82,17 @@ Gaps this turned up (in the suite, not the contracts):
   levels for a few dozen orders: same-level books almost never happen, so the fix was barely exercised even by a
   correct invariant. A second handler that packs submissions around one price makes them happen.
 
+What was missing in the tools:
+- **concolity has no invariant or sequence runner.** Matching-engine bugs live in sequences (submit, partial fill,
+  reprice, cancel, match); explore works on one call's arguments. The hunt used forge's invariant campaigns, run in
+  the background (256 × 200 in about 45 s per suite). Next for concolity: run invariant campaigns itself (with
+  coverage of what they reach), and explore sequences, not only arguments.
+- **No measure of whether a campaign reaches a state.** Checking that same-level books occurred took an ad-hoc counter
+  in `afterInvariant`. A tool should report how often a predicate held across a campaign (state coverage), next to
+  line and branch coverage.
+- **The highest-leverage step was reading the invariants against the fix**, not running a tool: "does any invariant
+  see what this change changed, and does the campaign reach it?" That's now in the hunt skill.
+
 ### Fuzzer benchmark: the price book's mutants (2026-10-26, fead63f)
 
 `concolity bench`, 30 operator mutants of RadixPriceTree, EligiblePrice and TickPrice, 65 fuzz tests, 2 s each
@@ -93,17 +104,6 @@ concolity 306 sides, forge's corpus 240. Leads from the survivors:
 |---|---|---|
 | `TickPrice.floorTick` regimes (`num / den` against `1 << 64` and `1 << 128`) | Mutating either division into a multiplication survives every fuzz test. With `*`, amounts multiplying past 2^128 would map to the end key, so no fuzz test checks `key` against the exact price for large amounts. | open: write the property test (large amounts, ordered by cross-multiplied price) |
 | `RadixPriceTree.sol:54` `bit > splitBit` | `>=` survives. Either no insert path has a branch at the split bit (an invariant worth stating), or the tests don't reach one. | open |
-
-What was missing in the tools:
-- **concolity has no invariant or sequence runner.** Matching-engine bugs live in sequences (submit, partial fill,
-  reprice, cancel, match); explore works on one call's arguments. The hunt used forge's invariant campaigns, run in
-  the background (256 × 200 in about 45 s per suite). Next for concolity: run invariant campaigns itself (with
-  coverage of what they reach), and explore sequences, not only arguments.
-- **No measure of whether a campaign reaches a state.** Checking that same-level books occurred took an ad-hoc counter
-  in `afterInvariant`. A tool should report how often a predicate held across a campaign (state coverage), next to
-  line and branch coverage.
-- **The highest-leverage step was reading the invariants against the fix**, not running a tool: "does any invariant
-  see what this change changed, and does the campaign reach it?" That's now in the hunt skill.
 
 ## 2. Bug classes and the bytecode oracles that catch them
 
