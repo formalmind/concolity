@@ -21,8 +21,9 @@ use revm::primitives::{keccak256, Address, Bytes, TxKind, B256, U256};
 use sol_debug::session::CodeKind;
 use sol_debug::trace::Coverage;
 use sol_debug::Session;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,55 @@ pub struct Options {
     pub only: Option<String>,
     /// Only the branch sides at this place (`src/AsyncSwap.sol:446`), instead of every untaken side.
     pub target: Option<(String, usize)>,
+    /// A time-boxed campaign instead of the suite's untaken sides (the benchmark's mode, `bench.rs`).
+    pub campaign: Option<Campaign>,
+}
+
+/// A campaign: each fuzz test of these files gets the same time, every side it hasn't taken yet is a target, and
+/// when the solver has nothing queued a fresh random input runs. The suite's coverage isn't read.
+#[derive(Clone, Debug, Default)]
+pub struct Campaign {
+    /// The test files.
+    pub files: Vec<String>,
+    /// Only these tests (`Contract::sig`); all fuzz tests of the files when None.
+    pub tests: Option<HashSet<String>>,
+    pub per_test: Duration,
+    /// Stop every worker at the first failure (a mutant is killed once).
+    pub stop_at_failure: bool,
+    /// The solver off: random inputs only (to measure what solving adds).
+    pub random_only: bool,
+    /// Run exactly these inputs per test (`Contract::sig` → calldata) instead of fuzzing: another fuzzer's corpus
+    /// measured on this bytecode, or counterexamples checked on another build.
+    pub replay: Option<HashMap<String, Vec<Vec<u8>>>>,
+}
+
+/// A test that failed in a campaign, at its first failing input.
+#[derive(Clone, Debug)]
+pub struct Failure {
+    /// Since the worker started fuzzing (its compile excluded).
+    pub at: Duration,
+    pub test: String,
+    pub calldata: Vec<u8>,
+    pub args: String,
+    pub reason: String,
+}
+
+/// What a campaign saw, on the bytecode it ran.
+#[derive(Clone, Debug, Default)]
+pub struct CampaignResult {
+    /// The first failure per test, earliest first.
+    pub failures: Vec<Failure>,
+    /// Every JUMPI side taken in the included files: (file, line, artifact, pc, jumped).
+    pub sides: BTreeSet<(String, usize, String, usize, bool)>,
+    /// Every JUMPI side there, taken or not.
+    pub all_sides: usize,
+    pub lines: BTreeSet<(String, usize)>,
+    /// Replay mode: each input and whether the test passed on it.
+    pub replayed: Vec<(String, Vec<u8>, bool)>,
+    /// The tests it ran (`Contract::sig`).
+    pub tests: Vec<String>,
+    /// The slowest worker's compile.
+    pub compile: Duration,
 }
 
 /// A target: one side of one JUMPI, by its line.
@@ -99,6 +149,7 @@ pub struct Report {
     /// Operand shadows dropped as stale (their value no longer the operand's).
     pub stale: usize,
     pub time: Duration,
+    pub campaign: Option<CampaignResult>,
 }
 
 /// The Shadow, shared with the runner's inspector slot for one run.
@@ -147,6 +198,11 @@ struct Part {
     pinned_ops: HashMap<u8, usize>,
     /// Solutions dropped because they weren't well-formed ABI for the test's parameters.
     malformed: usize,
+    failures: Vec<Failure>,
+    replayed: Vec<(String, Vec<u8>, bool)>,
+    tests: Vec<String>,
+    files: BTreeMap<String, coverage::FileCoverage>,
+    compile: Duration,
 }
 
 fn better(slot: &mut Option<Outcome>, o: Outcome) {
@@ -249,7 +305,7 @@ fn with_model(shadow: &Shadow, data: &[u8], model: &[U256]) -> Vec<u8> {
 pub fn run(opts: &Options) -> Result<Report> {
     let started = Instant::now();
     // The targets: every untaken side in the included files (or at the one place asked about).
-    let cov = coverage::branches(&opts.coverage)?;
+    let cov = if opts.campaign.is_some() { vec![] } else { coverage::branches(&opts.coverage)? };
     let mut targets: HashMap<(String, usize, bool), Side> = HashMap::new();
     let mut reached: HashSet<(String, usize)> = HashSet::new();
     for (file, line, code, pc, j, fl) in &cov {
@@ -272,7 +328,10 @@ pub fn run(opts: &Options) -> Result<Report> {
 
     // The same compile groups and batches as coverage.
     let root = &opts.coverage.root;
-    let mut files = coverage::test_files(root, &opts.coverage.test_dir, &opts.coverage.skip);
+    let mut files = match &opts.campaign {
+        Some(c) => c.files.clone(),
+        None => coverage::test_files(root, &opts.coverage.test_dir, &opts.coverage.skip),
+    };
     // With --only, compile just the test files that can hold those harnesses (their source names the contract).
     if let Some(only) = &opts.only {
         let contract = only.split("::").next().unwrap_or(only);
@@ -298,12 +357,13 @@ pub fn run(opts: &Options) -> Result<Report> {
         }
     }
     let test_dir = opts.coverage.test_dir.trim_end_matches('/').to_string() + "/";
+    let stop = AtomicBool::new(false);
     let parts: Vec<Result<Part>> = std::thread::scope(|scope| {
         let handles: Vec<_> = work
             .iter()
             .map(|(project, batch)| {
-                let (settings, test_dir, wanted) = (&settings, &test_dir, wanted.clone());
-                scope.spawn(move || worker(project, settings, batch, test_dir, opts, &wanted))
+                let (settings, test_dir, wanted, stop) = (&settings, &test_dir, wanted.clone(), &stop);
+                scope.spawn(move || worker(project, settings, batch, test_dir, opts, &wanted, stop))
             })
             .collect();
         handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("an explore worker died")))).collect()
@@ -314,8 +374,26 @@ pub fn run(opts: &Options) -> Result<Report> {
     let (mut findings, mut runs, mut solver_calls, mut mismatches, mut malformed, mut stale) = (vec![], 0, 0, 0, 0, 0);
     let (mut mismatch_ops, mut pinned_ops) = (BTreeMap::new(), BTreeMap::new());
     let op_name = |o: u8| revm::bytecode::opcode::OpCode::new(o).map_or(format!("0x{o:02x}"), |c| c.as_str().to_string());
+    let mut campaign = opts.campaign.as_ref().map(|_| CampaignResult::default());
     for p in parts {
-        let p = p?;
+        let mut p = p?;
+        if let Some(c) = campaign.as_mut() {
+            c.failures.append(&mut p.failures);
+            c.replayed.append(&mut p.replayed);
+            c.tests.append(&mut p.tests);
+            c.compile = c.compile.max(p.compile);
+            for (file, f) in std::mem::take(&mut p.files) {
+                for ((line, code, pc), (j, fl)) in f.branches {
+                    c.all_sides += 2;
+                    for (taken, jumped) in [(j, true), (fl, false)] {
+                        if taken > 0 {
+                            c.sides.insert((file.clone(), line, code.clone(), pc, jumped));
+                        }
+                    }
+                }
+                c.lines.extend(f.lines.into_iter().filter(|(_, n)| *n > 0).map(|(l, _)| (file.clone(), l)));
+            }
+        }
         for (k, o) in p.outcomes {
             if let Some(slot) = best.get_mut(&k) {
                 better(slot, o);
@@ -352,12 +430,18 @@ pub fn run(opts: &Options) -> Result<Report> {
         .collect();
     findings.sort_by(|a, b| (&a.test, &a.reason).cmp(&(&b.test, &b.reason)));
     findings.dedup_by(|a, b| a.test == b.test && a.reason == b.reason);
-    Ok(Report { targets, findings, runs, solver_calls, mismatches, mismatch_ops, pinned_ops, malformed, stale, time: started.elapsed() })
+    if let Some(c) = campaign.as_mut() {
+        c.failures.sort_by_key(|f| f.at);
+        c.tests.sort();
+    }
+    Ok(Report { targets, findings, runs, solver_calls, mismatches, mismatch_ops, pinned_ops, malformed, stale, time: started.elapsed(), campaign })
 }
 
-fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Settings, batch: &[String], test_dir: &str, opts: &Options, wanted: &HashSet<(String, usize, bool)>) -> Result<Part> {
+fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Settings, batch: &[String], test_dir: &str, opts: &Options, wanted: &HashSet<(String, usize, bool)>, stop: &AtomicBool) -> Result<Part> {
     let mut part = Part::default();
+    let compiling = Instant::now();
     let Ok(output) = coverage::compile_cached(project, batch, settings) else { return Ok(part) };
+    part.compile = compiling.elapsed();
     let permissions = Permissions::from_foundry(&project.root);
     let mut s = Session::from_output(project.clone(), &output)?;
     s.evm.inspector.coverage = Some(Coverage::default());
@@ -370,6 +454,7 @@ fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Setti
     let fresh = s.snapshot();
     let filters = Filters::from_foundry(&project.root);
     let mut solver = Solver::z3()?;
+    let fuzzing = Instant::now();
     let mut labels: HashMap<B256, Option<String>> = HashMap::new();
     let contracts: Vec<usize> = (0..s.artifacts.len()).filter(|i| batch.contains(&s.artifacts[*i].file)).collect();
     for ci in contracts {
@@ -378,6 +463,8 @@ fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Setti
         let fns: Vec<String> = fns
             .into_iter()
             .filter(|f| filters.excludes(&name, f).is_none() && opts.only.as_ref().is_none_or(|o| format!("{name}::{f}").contains(o.as_str())))
+            .filter(|f| !f.starts_with("invariant") && !f.starts_with("statefulFuzz"))
+            .filter(|f| opts.campaign.as_ref().and_then(|c| c.tests.as_ref()).is_none_or(|t| t.contains(&format!("{name}::{f}"))))
             .collect();
         if fns.is_empty() {
             continue;
@@ -387,10 +474,19 @@ fn worker(project: &formal_ast::solc::Project, settings: &sol_debug::solc::Setti
         let Ok(address) = s.deploy_test(&contract) else { continue };
         let ready = s.snapshot();
         for sig in &fns {
-            explore_test(&mut s, &ready, address, &format!("{name}::{sig}"), sig, opts, wanted, &mut solver, &mut labels, &mut part);
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            part.tests.push(format!("{name}::{sig}"));
+            explore_test(&mut s, &ready, address, &format!("{name}::{sig}"), sig, opts, wanted, &mut solver, &mut labels, &mut part, (fuzzing, stop));
         }
         for f in part.findings.iter_mut().filter(|f| f.file.is_empty()) {
             f.file = s.artifacts[ci].file.clone();
+        }
+    }
+    if opts.campaign.is_some() {
+        if let Some(cov) = s.evm.inspector.coverage.take() {
+            part.files = coverage::map_coverage(&s, &cov, &opts.coverage.include).0;
         }
     }
     Ok(part)
@@ -442,6 +538,7 @@ fn explore_test(
     solver: &mut Solver,
     labels: &mut HashMap<B256, Option<String>>,
     part: &mut Part,
+    (fuzzing, stop): (Instant, &AtomicBool),
 ) {
     let selector = keccak256(sig.as_bytes())[..4].to_vec();
     let Ok(types) = DynSolType::parse(&sig[sig.find('(').unwrap()..]) else { return };
@@ -470,9 +567,34 @@ fn explore_test(
     let mut seen_sides: HashSet<(B256, usize, bool)> = HashSet::new();
     let mut before = taken(s, labels, wanted);
     let mut runs = 0;
-    while let Some(data) = queue.pop_front() {
-        if runs >= opts.runs_per_test {
+    let campaign = opts.campaign.as_ref();
+    let until = campaign.map(|c| Instant::now() + c.per_test);
+    let replay = campaign.and_then(|c| c.replay.as_ref());
+    if let Some(r) = replay {
+        queue = r.get(test).cloned().unwrap_or_default().into();
+    }
+    let mut failed_once = false;
+    loop {
+        if stop.load(Ordering::Relaxed) {
             break;
+        }
+        let data = match queue.pop_front() {
+            Some(d) => d,
+            // A campaign fuzzes until its time is up: with nothing queued, a fresh random input.
+            None if until.is_some() && replay.is_none() => match rng.value(&types) {
+                Some(DynSolValue::Tuple(args)) => {
+                    let mut d = selector.clone();
+                    d.extend(DynSolValue::Tuple(args).abi_encode_params());
+                    d
+                }
+                _ => break,
+            },
+            None => break,
+        };
+        match until {
+            Some(u) if replay.is_none() && Instant::now() >= u => break,
+            None if runs >= opts.runs_per_test => break,
+            _ => {}
         }
         runs += 1;
         part.runs += 1;
@@ -503,7 +625,23 @@ fn explore_test(
             }
         }
         before = after;
-        if let Some(reason) = &failed {
+        if let Some(c) = campaign {
+            if replay.is_some() {
+                part.replayed.push((test.to_string(), data.clone(), run.success));
+                continue;
+            }
+            if let (Some(reason), false) = (&failed, failed_once) {
+                failed_once = true;
+                part.failures.push(Failure { at: fuzzing.elapsed(), test: test.to_string(), calldata: data.clone(), args: args.clone(), reason: reason.clone() });
+                if c.stop_at_failure {
+                    stop.store(true, Ordering::Relaxed);
+                    return;
+                }
+            }
+            if c.random_only {
+                continue;
+            }
+        } else if let Some(reason) = &failed {
             if runs > 1 + opts.seeds {
                 // An input the solver produced makes the test fail: the test's claim doesn't hold for it.
                 let reduced = reduce_finding(s, ready, address, &selector, &types, &data, reason);
@@ -539,8 +677,9 @@ fn explore_test(
             if tried.contains(&key) {
                 continue;
             }
-            let target = label.as_ref().is_some_and(|l| wanted.contains(&(l.clone(), d.pc, !d.jumped)));
             let new_side = !seen_sides.contains(&(d.code, d.pc, !d.jumped));
+            // In a campaign every side the test hasn't taken yet is a target.
+            let target = label.as_ref().is_some_and(|l| wanted.contains(&(l.clone(), d.pc, !d.jumped))) || (campaign.is_some() && new_side);
             if target || new_side {
                 tried.insert(key);
                 leaves.push((if target { 0 } else { 1 }, i));

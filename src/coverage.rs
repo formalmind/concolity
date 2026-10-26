@@ -767,7 +767,7 @@ impl<'a> StatementLines<'a> {
     }
 }
 
-fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<String, FileCoverage>, Vec<Binding>, usize) {
+pub(crate) fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (BTreeMap<String, FileCoverage>, Vec<Binding>, usize) {
     let included = |f: &str| include.is_empty() || include.iter().any(|p| f.starts_with(p.as_str()));
     let mut files: BTreeMap<String, FileCoverage> = BTreeMap::new();
     let mut statements = StatementLines::new(s);

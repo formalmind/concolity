@@ -84,6 +84,35 @@ concolity debug . test/AsyncSwap.t.sol AsyncSwapTest::test_x step --n 1200      
 concolity debug . test/Explore.t.sol 'MagicExploreTest::testFuzz_poke' revert --arg 1592598101 --arg 0 --arg 115792089237316195423570985008687907853269984665640564039457584007913129639929
 ```
 
+## bench
+
+How fast fuzzers catch planted bugs, on equal time. It changes one operator at a time in the files you name (from
+solc's AST, only on lines the fuzz tests run: `<` to `<=`, `+` to `-`, `&&` to `||`, …), and gives each fuzz test the
+same seconds in every tool:
+
+| Tool | What runs |
+|---|---|
+| `forge` | `forge test` as projects run it |
+| `forge-corpus` | forge's coverage-guided mode (`FOUNDRY_FUZZ_CORPUS_DIR`) |
+| `concolity` | a campaign: every branch side a test hasn't taken yet is a target for z3; random inputs when nothing is queued |
+| `concolity-random` | the same campaign with the solver off: the difference is what solving adds |
+
+```sh
+# On a clean copy: it rewrites the mutated files (and puts them back).
+concolity bench . --mutate src/libraries/RadixPriceTree.sol,src/libraries/TickPrice.sol \
+  --tests test/RadixPriceTree.t.sol,test/formal/SpecBook.t.sol --per-test 2 --mutants 30 --out bench.json
+```
+
+- **A kill counts only if the original passes on the same input.** Each counterexample is replayed on the unmutated
+  bytecode. forge's coverage-guided mode, for one, sends calldata solc's decoder rejects; those are false kills, counted
+  apart.
+- **Tests that fail on the original** (in any tool) are left out of every run.
+- **Coverage** is counted on the original, on the bytecode that ships, by concolity for both: its own campaign's
+  sides, and forge's corpus replayed. forge's default mode keeps no inputs, so it has no coverage figure.
+- **Time to kill**: concolity's from the start of fuzzing (its compile excluded); forge's is the wall time of
+  `forge test --fail-fast` after a build. A forge run that takes more than twice its time on the original is stopped and
+  counts as no kill (coverage-guided mode can hang once a test fails).
+
 ## In the Formal Mind desktop app
 
 The local swarm's agents have the same capabilities as tools, and they drive them; you watch.

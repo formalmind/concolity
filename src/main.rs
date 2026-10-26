@@ -49,6 +49,30 @@ enum Command {
         #[arg(long)]
         at: Option<String>,
     },
+    /// The fuzzer benchmark: mutants of the contracts, and how fast forge's fuzzing and concolity's campaigns
+    /// catch them, with the same seconds per fuzz test. Run it on a clean copy: it rewrites the mutated files.
+    Bench {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Source files to mutate.
+        #[arg(long, required = true, value_delimiter = ',')]
+        mutate: Vec<String>,
+        /// Test files whose fuzz tests are the harnesses.
+        #[arg(long, required = true, value_delimiter = ',')]
+        tests: Vec<String>,
+        #[arg(long, default_value_t = 2)]
+        per_test: u64,
+        #[arg(long, default_value_t = 20)]
+        mutants: usize,
+        /// Any of forge, forge-corpus, concolity, concolity-random.
+        #[arg(long, value_delimiter = ',', default_value = "forge,forge-corpus,concolity,concolity-random")]
+        tools: Vec<String>,
+        #[arg(long, default_value_t = 500)]
+        timeout_ms: u32,
+        /// Where the report goes (JSON); stdout when left out.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// The explore loop: untaken JUMPI sides as targets, fuzz tests as harnesses, z3 to solve for them.
     Explore {
         #[arg(default_value = ".")]
@@ -163,7 +187,7 @@ fn main() -> Result<()> {
                 None => None,
             };
             let coverage = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs: 32, fast: false };
-            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only, target };
+            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only, target, campaign: None };
             let report = concolity::explore::run(&opts)?;
             if let Some(path) = sarif {
                 concolity::sarif::write(&path, concolity::sarif::explore_run(&root, &report))?;
@@ -173,6 +197,15 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report.to_json())?);
             } else {
                 print!("{}", report.summary());
+            }
+        }
+        Command::Bench { root, mutate, tests, per_test, mutants, tools, timeout_ms, out } => {
+            let work = std::env::temp_dir().join(format!("concolity-bench-{}", std::process::id()));
+            let opts = concolity::bench::Options { root, mutate, tests, per_test, mutants, tools, timeout_ms, work };
+            let report = serde_json::to_string_pretty(&concolity::bench::run(&opts)?)?;
+            match out {
+                Some(p) => std::fs::write(&p, report)?,
+                None => println!("{report}"),
             }
         }
         Command::Debug { root, file, test, query, args, n, var, function, limit, text } => {
