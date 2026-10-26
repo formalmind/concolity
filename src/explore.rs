@@ -330,7 +330,7 @@ pub fn run(opts: &Options) -> Result<Report> {
     let root = &opts.coverage.root;
     let mut files = match &opts.campaign {
         Some(c) => c.files.clone(),
-        None => coverage::test_files(root, &opts.coverage.test_dir, &opts.coverage.skip),
+        None => coverage::test_files(root, &opts.coverage.tests(), &opts.coverage.skip),
     };
     // With --only, compile just the test files that can hold those harnesses (their source names the contract).
     if let Some(only) = &opts.only {
@@ -356,7 +356,7 @@ pub fn run(opts: &Options) -> Result<Report> {
             work.push((p.clone(), b));
         }
     }
-    let test_dir = opts.coverage.test_dir.trim_end_matches('/').to_string() + "/";
+    let test_dir = opts.coverage.tests().trim_end_matches('/').to_string() + "/";
     let stop = AtomicBool::new(false);
     let parts: Vec<Result<Part>> = std::thread::scope(|scope| {
         let handles: Vec<_> = work

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Debug)]
 pub struct Options {
     pub root: PathBuf,
-    /// Folder of the tests, relative to the root.
+    /// Folder of the tests, relative to the root. `test` means forge's: the active profile's `test` (default `test`).
     pub test_dir: String,
     /// Test files whose path contains one of these are left out.
     pub skip: Vec<String>,
@@ -33,6 +33,16 @@ pub struct Options {
     pub fuzz_runs: u32,
     /// Compile with the optimizer off, like forge coverage: about 3x faster, but not the bytecode that ships.
     pub fast: bool,
+}
+
+impl Options {
+    /// The test folder: `test_dir`, where `test` defers to the active foundry.toml profile's (as forge reads it).
+    pub fn tests(&self) -> String {
+        if self.test_dir.trim_end_matches('/') != "test" {
+            return self.test_dir.clone();
+        }
+        formal_ast::foundry::get_str(&formal_ast::foundry::read(&self.root), "test").map(|t| t.trim_end_matches('/').to_string()).unwrap_or_else(|| "test".into())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,7 +159,7 @@ pub fn tree_key(root: &Path) -> Option<String> {
 /// Where the suite's branch map is cached (~/.cache/formalmind/coverage), by the project's real path, the tree and the
 /// options. None outside git.
 fn branches_file(opts: &Options) -> Option<PathBuf> {
-    let key = tree_key(&opts.root).map(|t| format!("{t}-{:016x}", fnv64(format!("{}|{:?}|{:?}|{}|{}", opts.test_dir, opts.skip, opts.include, opts.fuzz_runs, opts.fast).as_bytes())));
+    let key = tree_key(&opts.root).map(|t| format!("{t}-{:016x}", fnv64(format!("{}|{:?}|{:?}|{}|{}|{}", opts.tests(), opts.skip, opts.include, opts.fuzz_runs, opts.fast, formal_ast::foundry::profile_name()).as_bytes())));
     // The project by its real path: `.` and /abs/path are the same project.
     let real = std::fs::canonicalize(&opts.root).unwrap_or_else(|_| opts.root.clone());
     key.and_then(|k| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/formalmind/coverage").join(format!("{:016x}", fnv64(real.to_string_lossy().as_bytes()))).join(format!("{k}.json"))))
@@ -214,10 +224,9 @@ pub(crate) struct Filters {
 
 impl Filters {
     pub(crate) fn from_foundry(root: &Path) -> Filters {
-        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return Filters::default() };
-        let Ok(doc) = text.parse::<toml::Table>() else { return Filters::default() };
-        let p = doc.get("profile").and_then(|p| p.get("default"));
-        let re = |k: &str| p.and_then(|p| p.get(k)).and_then(|v| v.as_str()).and_then(|r| regex::Regex::new(r).ok());
+        // The active profile (FOUNDRY_PROFILE over the default one), as forge reads it.
+        let p = formal_ast::foundry::read(root);
+        let re = |k: &str| p.get(k).and_then(|v| v.as_str()).and_then(|r| regex::Regex::new(r).ok());
         Filters {
             match_test: re("match_test"),
             no_match_test: re("no_match_test"),
@@ -255,9 +264,10 @@ pub(crate) struct Permissions {
 impl Permissions {
     pub(crate) fn from_foundry(root: &Path) -> Permissions {
         let none = Permissions { ffi: false, writable: vec![], readable: vec![] };
-        let Ok(text) = std::fs::read_to_string(root.join("foundry.toml")) else { return none };
-        let Ok(doc) = text.parse::<toml::Table>() else { return none };
-        let Some(p) = doc.get("profile").and_then(|p| p.get("default")) else { return none };
+        let p = formal_ast::foundry::read(root);
+        if p.is_empty() {
+            return none;
+        }
         let with = |ok: &dyn Fn(&str) -> bool| -> Vec<PathBuf> {
             p.get("fs_permissions")
                 .and_then(|v| v.as_array())
@@ -425,14 +435,14 @@ pub(crate) fn reason(run: &sol_debug::Run) -> String {
 
 pub fn run(opts: &Options) -> Result<Report> {
     let started = Instant::now();
-    let files = test_files(&opts.root, &opts.test_dir, &opts.skip);
-    anyhow::ensure!(!files.is_empty(), "no *.t.sol files under {}", opts.root.join(&opts.test_dir).display());
+    let files = test_files(&opts.root, &opts.tests(), &opts.skip);
+    anyhow::ensure!(!files.is_empty(), "no *.t.sol files under {}", opts.root.join(opts.tests()).display());
     let mut settings = Settings::from_foundry(&opts.root);
     if opts.fast {
         settings.optimizer = None;
     }
     let project = formal_ast::solc::Project::load(&opts.root)?;
-    let test_dir = opts.test_dir.trim_end_matches('/').to_string() + "/";
+    let test_dir = opts.tests().trim_end_matches('/').to_string() + "/";
 
     // solc uses one core, and its cost is spread over the test files (asyncswap/contracts: src/ alone 1.8 s, one test
     // file 4.7 s, all 125 about 70 s with the optimizer). So the files are split into one batch per core, balanced by
