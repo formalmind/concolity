@@ -170,6 +170,23 @@ pub fn cached(opts: &Options) -> Option<Branches> {
     branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok())
 }
 
+/// The branch map of this code, or else of the project's latest run with these options on an earlier tree (any change
+/// since, even an untracked file, makes a new tree): the map and whether it is of this tree. Runs nothing.
+pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
+    if let Some(b) = cached(opts) {
+        return Some((b, true));
+    }
+    let file = branches_file(opts)?;
+    let suffix = file.file_name()?.to_string_lossy().rsplit_once('-')?.1.to_string();
+    let newest = std::fs::read_dir(file.parent()?)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(&format!("-{suffix}")))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+    let map = serde_json::from_str::<Branches>(&std::fs::read_to_string(newest.path()).ok()?).ok()?;
+    Some((map, false))
+}
+
 /// Caches a run's branch map for `branches`, so a caller that ran the suite itself (the desktop app's coverage) makes
 /// the next `--at` or explore instant.
 pub fn remember(opts: &Options, report: &Report) -> Branches {
