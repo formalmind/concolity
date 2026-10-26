@@ -102,7 +102,7 @@ concolity 306 sides, forge's corpus 240. Leads from the survivors:
 
 | Where | What | Status |
 |---|---|---|
-| `TickPrice.floorTick` regimes (`num / den` against `1 << 64` and `1 << 128`) | Mutating either division into a multiplication survives every fuzz test. With `*`, amounts multiplying past 2^128 would map to the end key, so no fuzz test checks `key` against the exact price for large amounts. | open: write the property test (large amounts, ordered by cross-multiplied price) |
+| `TickPrice.floorTick` regimes (`num / den` against `1 << 64` and `1 << 128`) | Mutating either division into a multiplication survived every fuzz test: no test scaled an order's amounts. With `*` at the second check, an order whose ratio is at least 2^64 and whose amounts multiply past 2^128 maps to the end key. | **closed in a scratch copy**: `case-studies/async-swap/TickPriceKey.t.sol` (the key depends only on the price, under any scaling) kills both. Line 29 fails the key assertion; line 26 fails only by overflowing, so it is equivalent below 2^256. Not in asyncswap/contracts yet |
 | `RadixPriceTree.sol:54` `bit > splitBit` | `>=` survives. Either no insert path has a branch at the split bit (an invariant worth stating), or the tests don't reach one. | open |
 
 ## 2. Bug classes and the bytecode oracles that catch them
