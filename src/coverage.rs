@@ -158,11 +158,16 @@ fn branches_file(opts: &Options) -> Option<PathBuf> {
 /// The suite's branch map, from the cache when the code and the options haven't changed since a run, so explore
 /// doesn't run the whole suite again for every question.
 pub fn branches(opts: &Options) -> Result<Branches> {
-    if let Some(hit) = branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok()) {
+    if let Some(hit) = cached(opts) {
         eprintln!("coverage: cached (the code hasn't changed)");
         return Ok(hit);
     }
     Ok(remember(opts, &run(opts)?))
+}
+
+/// The branch map if this code has been run with these options, without running anything.
+pub fn cached(opts: &Options) -> Option<Branches> {
+    branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok())
 }
 
 /// Caches a run's branch map for `branches`, so a caller that ran the suite itself (the desktop app's coverage) makes
