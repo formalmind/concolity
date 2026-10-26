@@ -273,10 +273,7 @@ impl Arena {
     /// A fresh input, with the value this run gives it.
     pub fn var(&mut self, name: impl Into<String>, sort: Sort, value: U256) -> ExprId {
         let index = self.vars.len() as u32;
-        self.vars.push(Var {
-            name: name.into(),
-            sort,
-        });
+        self.vars.push(Var { name: name.into(), sort });
         let id = self.intern(Node::Var(index), sort, value);
         self.var_nodes.push(id);
         id
@@ -351,11 +348,7 @@ impl Arena {
     pub fn mod_op(&mut self, mul: bool, a: ExprId, b: ExprId, n: ExprId) -> ExprId {
         let (a, b, n) = (self.to_word(a), self.to_word(b), self.to_word(n));
         let (va, vb, vn) = (self.value(a), self.value(b), self.value(n));
-        let v = if mul {
-            va.mul_mod(vb, vn)
-        } else {
-            va.add_mod(vb, vn)
-        };
+        let v = if mul { va.mul_mod(vb, vn) } else { va.add_mod(vb, vn) };
         if [a, b, n].iter().all(|x| self.constant(*x).is_some()) {
             return self.word(v);
         }
@@ -427,11 +420,7 @@ impl Arena {
         if a == b {
             return a;
         }
-        let v = if self.value(c).is_zero() {
-            self.value(b)
-        } else {
-            self.value(a)
-        };
+        let v = if self.value(c).is_zero() { self.value(b) } else { self.value(a) };
         self.intern(Node::Ite(c, a, b), Sort::Word, v)
     }
 
@@ -462,11 +451,7 @@ impl Arena {
         // concat(extract(w, 0), …, extract(w, 31)) is w.
         if let Node::Extract(w, 0) = self.node(bytes[0]) {
             let w = *w;
-            if bytes
-                .iter()
-                .enumerate()
-                .all(|(i, b)| *self.node(*b) == Node::Extract(w, i as u8))
-            {
+            if bytes.iter().enumerate().all(|(i, b)| *self.node(*b) == Node::Extract(w, i as u8)) {
                 return w;
             }
         }
@@ -545,14 +530,8 @@ mod tests {
         assert_eq!(eval_bin(BinOp::SDiv, neg1, U256::ZERO), U256::ZERO);
         // SDIV(MIN, -1) = MIN: the stack has b on top, so eval_bin(SDiv, a, b) is a / b.
         assert_eq!(eval_bin(BinOp::SDiv, min, neg1), min);
-        assert_eq!(
-            eval_bin(BinOp::SMod, neg1.wrapping_sub(U256::from(6)), U256::from(3)),
-            neg1
-        );
+        assert_eq!(eval_bin(BinOp::SMod, neg1.wrapping_sub(U256::from(6)), U256::from(3)), neg1);
         assert_eq!(eval_bin(BinOp::Sar, U256::from(300), neg1), U256::MAX);
-        assert_eq!(
-            eval_bin(BinOp::SignExtend, U256::ZERO, U256::from(0xff)),
-            U256::MAX
-        );
+        assert_eq!(eval_bin(BinOp::SignExtend, U256::ZERO, U256::from(0xff)), U256::MAX);
     }
 }

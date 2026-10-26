@@ -3,10 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(
-    name = "concolity",
-    about = "Testing tools for EVM bytecode: coverage, concolic exploration"
-)]
+#[command(name = "concolity", about = "Testing tools for EVM bytecode: coverage, concolic exploration")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -115,59 +112,21 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
-        Command::Coverage {
-            root,
-            test_dir,
-            skip,
-            include,
-            fuzz_runs,
-            lcov,
-            bindings,
-            against_forge,
-            fast,
-            json,
-            sarif,
-            at,
-        } => {
-            let opts = concolity::coverage::Options {
-                root: root.clone(),
-                test_dir,
-                skip,
-                include,
-                fuzz_runs,
-                fast,
-            };
+        Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json, sarif, at } => {
+            let opts = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs, fast };
             if let Some(at) = at {
-                let (f, l) = at
-                    .rsplit_once(':')
-                    .ok_or_else(|| anyhow::anyhow!("--at is file:line"))?;
+                let (f, l) = at.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("--at is file:line"))?;
                 let l: usize = l.parse()?;
-                let here: Vec<_> = concolity::coverage::branches(&opts)?
-                    .into_iter()
-                    .filter(|(file, line, ..)| file.ends_with(f) && *line == l)
-                    .collect();
+                let here: Vec<_> = concolity::coverage::branches(&opts)?.into_iter().filter(|(file, line, ..)| file.ends_with(f) && *line == l).collect();
                 if here.is_empty() {
                     println!("{at}: no branch (JUMPI) on that line in the included files");
                 }
                 for (file, line, code, pc, j, fl) in &here {
-                    let side = |n: u64| {
-                        if n == 0 {
-                            "never".to_string()
-                        } else {
-                            format!("{n}x")
-                        }
-                    };
+                    let side = |n: u64| if n == 0 { "never".to_string() } else { format!("{n}x") };
                     if json {
-                        println!(
-                            "{}",
-                            serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl })
-                        );
+                        println!("{}", serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl }));
                     } else {
-                        println!(
-                            "{file}:{line}  {code} pc {pc}  jump {}  fall-through {}",
-                            side(*j),
-                            side(*fl)
-                        );
+                        println!("{file}:{line}  {code} pc {pc}  jump {}  fall-through {}", side(*j), side(*fl));
                     }
                 }
                 return Ok(());
@@ -195,46 +154,16 @@ fn main() -> Result<()> {
                 eprintln!("lcov: {}", path.display());
             }
         }
-        Command::Explore {
-            root,
-            test_dir,
-            skip,
-            include,
-            only,
-            target,
-            runs_per_test,
-            flips_per_run,
-            timeout_ms,
-            seeds,
-            json,
-            sarif,
-        } => {
+        Command::Explore { root, test_dir, skip, include, only, target, runs_per_test, flips_per_run, timeout_ms, seeds, json, sarif } => {
             let target = match target {
                 Some(t) => {
-                    let (f, l) = t
-                        .rsplit_once(':')
-                        .ok_or_else(|| anyhow::anyhow!("--target is file:line"))?;
+                    let (f, l) = t.rsplit_once(':').ok_or_else(|| anyhow::anyhow!("--target is file:line"))?;
                     Some((f.to_string(), l.parse::<usize>()?))
                 }
                 None => None,
             };
-            let coverage = concolity::coverage::Options {
-                root: root.clone(),
-                test_dir,
-                skip,
-                include,
-                fuzz_runs: 32,
-                fast: false,
-            };
-            let opts = concolity::explore::Options {
-                coverage,
-                runs_per_test,
-                flips_per_run,
-                timeout_ms,
-                seeds,
-                only,
-                target,
-            };
+            let coverage = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs: 32, fast: false };
+            let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only, target };
             let report = concolity::explore::run(&opts)?;
             if let Some(path) = sarif {
                 concolity::sarif::write(&path, concolity::sarif::explore_run(&root, &report))?;
@@ -246,43 +175,21 @@ fn main() -> Result<()> {
                 print!("{}", report.summary());
             }
         }
-        Command::Debug {
-            root,
-            file,
-            test,
-            query,
-            args,
-            n,
-            var,
-            function,
-            limit,
-            text,
-        } => {
+        Command::Debug { root, file, test, query, args, n, var, function, limit, text } => {
             use sol_debug::agent;
-            let (contract, name) = test
-                .split_once("::")
-                .ok_or_else(|| anyhow::anyhow!("write the test as Contract::name"))?;
+            let (contract, name) = test.split_once("::").ok_or_else(|| anyhow::anyhow!("write the test as Contract::name"))?;
             let mut s = sol_debug::Session::compile(&root, &file)?;
             let address = s.deploy_test(contract)?;
             let ci = s.artifact(contract)?;
             let sig = s.artifacts[ci].signature(name)?;
             let data = sol_debug::session::encode_call(&sig, &args)?;
-            let run = s.transact(
-                sol_debug::SENDER,
-                revm::primitives::TxKind::Call(address),
-                data.into(),
-                revm::primitives::U256::ZERO,
-            )?;
+            let run = s.transact(sol_debug::SENDER, revm::primitives::TxKind::Call(address), data.into(), revm::primitives::U256::ZERO)?;
             let out = match query.as_str() {
                 "summary" => agent::summary(&s, &run),
                 "lines" => agent::lines(&s, &run, function.as_deref(), limit),
                 "revert" => agent::revert(&s, &run),
                 "writes" => agent::writes(&s, &run, var.as_deref()),
-                "step" => agent::step(
-                    &s,
-                    &run,
-                    n.ok_or_else(|| anyhow::anyhow!("step needs --n"))?,
-                ),
+                "step" => agent::step(&s, &run, n.ok_or_else(|| anyhow::anyhow!("step needs --n"))?),
                 q => anyhow::bail!("no query {q}: summary, lines, revert, writes, step"),
             };
             if text && query == "lines" {

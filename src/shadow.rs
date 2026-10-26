@@ -8,9 +8,7 @@
 use crate::expr::{Arena, BinOp, CmpOp, ExprId, Sort};
 use revm::bytecode::opcode::{self as op, OpCode};
 use revm::interpreter::interpreter_types::{InputsTr, Jumps, LegacyBytecode, MemoryTr};
-use revm::interpreter::{
-    CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult,
-};
+use revm::interpreter::{CallInputs, CallOutcome, CreateInputs, CreateOutcome, Interpreter, InterpreterResult};
 use revm::primitives::{address, keccak256, Address, Bytes, B256, U256};
 use revm::Inspector;
 use std::collections::HashMap;
@@ -30,15 +28,7 @@ pub struct Sym {
 
 impl Default for Sym {
     fn default() -> Self {
-        Sym {
-            calldata_from: Some(4),
-            caller: false,
-            value: false,
-            origin: false,
-            timestamp: false,
-            number: false,
-            prevrandao: false,
-        }
+        Sym { calldata_from: Some(4), caller: false, value: false, origin: false, timestamp: false, number: false, prevrandao: false }
     }
 }
 
@@ -185,25 +175,14 @@ impl Shadow {
     /// concretizations made before it, and its condition flipped.
     pub fn flip(&mut self, i: usize) -> Vec<ExprId> {
         let mut q = self.assumptions.clone();
-        for c in self
-            .concretized
-            .iter()
-            .filter(|c| c.at <= i)
-            .cloned()
-            .collect::<Vec<_>>()
-        {
+        for c in self.concretized.iter().filter(|c| c.at <= i).cloned().collect::<Vec<_>>() {
             let v = self.arena.word(c.value);
             q.push(self.arena.cmp(CmpOp::Eq, c.expr, v));
         }
-        let path: Vec<(ExprId, bool)> =
-            self.path[..=i].iter().map(|d| (d.cond, d.jumped)).collect();
+        let path: Vec<(ExprId, bool)> = self.path[..=i].iter().map(|d| (d.cond, d.jumped)).collect();
         for (k, (cond, jumped)) in path.into_iter().enumerate() {
             let take = if k == i { !jumped } else { jumped };
-            q.push(if take {
-                cond
-            } else {
-                self.arena.bool_not(cond)
-            });
+            q.push(if take { cond } else { self.arena.bool_not(cond) });
         }
         q
     }
@@ -216,20 +195,11 @@ impl Shadow {
                 calldata.unwrap_or_default()
             }
         };
-        self.frames.push(Frame {
-            address,
-            calldata,
-            ..Default::default()
-        });
+        self.frames.push(Frame { address, calldata, ..Default::default() });
     }
 
     /// Ends the innermost frame: undoes its storage shadows if it failed, hands its output to the caller.
-    fn pop_frame(
-        &mut self,
-        result: &InterpreterResult,
-        precompile: Option<Address>,
-        out: Option<std::ops::Range<usize>>,
-    ) {
+    fn pop_frame(&mut self, result: &InterpreterResult, precompile: Option<Address>, out: Option<std::ops::Range<usize>>) {
         let Some(f) = self.frames.pop() else { return };
         let ok = result.result.is_ok();
         let output = if precompile == Some(IDENTITY) && ok {
@@ -247,11 +217,7 @@ impl Shadow {
             }
         } else {
             for (transient, addr, slot, prev) in f.journal.into_iter().rev() {
-                let map = if transient {
-                    &mut self.transient
-                } else {
-                    &mut self.storage
-                };
+                let map = if transient { &mut self.transient } else { &mut self.storage };
                 match prev {
                     Some(p) => map.insert((addr, slot), p),
                     None => map.remove(&(addr, slot)),
@@ -264,11 +230,7 @@ impl Shadow {
                 // output's shadows, or become concrete.
                 if let Some(range) = out {
                     for i in 0..range.len().min(result.output.len()) {
-                        set(
-                            &mut parent.memory,
-                            range.start + i,
-                            output.get(i).copied().flatten(),
-                        );
+                        set(&mut parent.memory, range.start + i, output.get(i).copied().flatten());
                     }
                 }
                 parent.returndata = output;
@@ -280,14 +242,7 @@ impl Shadow {
     fn concretize(&mut self, address: Address, p: &Pending, i: usize) {
         if let Some(t) = p.ins.get(i).copied().flatten() {
             let expr = self.arena.to_word(t);
-            self.concretized.push(Concretization {
-                at: self.path.len(),
-                address,
-                pc: p.pc,
-                op: p.op,
-                expr,
-                value: p.vals[i],
-            });
+            self.concretized.push(Concretization { at: self.path.len(), address, pc: p.pc, op: p.op, expr, value: p.vals[i] });
         }
     }
 
@@ -319,15 +274,7 @@ impl Shadow {
             return None;
         }
         let be = concrete.to_be_bytes::<32>();
-        let parts = (0..32)
-            .map(|i| {
-                bytes
-                    .get(i)
-                    .copied()
-                    .flatten()
-                    .unwrap_or_else(|| self.arena.byte(be[i]))
-            })
-            .collect();
+        let parts = (0..32).map(|i| bytes.get(i).copied().flatten().unwrap_or_else(|| self.arena.byte(be[i]))).collect();
         Some(self.arena.concat(parts))
     }
 
@@ -340,20 +287,8 @@ impl Shadow {
         let one = |s: Option<ExprId>| vec![s];
         let usize_of = |v: U256| v.saturating_to::<usize>();
         match o {
-            op::ADD
-            | op::MUL
-            | op::SUB
-            | op::DIV
-            | op::SDIV
-            | op::MOD
-            | op::SMOD
-            | op::AND
-            | op::OR
-            | op::XOR
-            | op::BYTE
-            | op::SHL
-            | op::SHR
-            | op::SAR => {
+            op::ADD | op::MUL | op::SUB | op::DIV | op::SDIV | op::MOD | op::SMOD | op::AND | op::OR | op::XOR
+            | op::BYTE | op::SHL | op::SHR | op::SAR => {
                 if !sym {
                     return one(None);
                 }
@@ -474,30 +409,15 @@ impl Shadow {
                 if len > MAX_RANGE {
                     return one(None);
                 }
-                let input: Vec<_> = (0..len)
-                    .map(|i| self.frames[f].memory.get(&(off + i)).copied())
-                    .collect();
+                let input: Vec<_> = (0..len).map(|i| self.frames[f].memory.get(&(off + i)).copied()).collect();
                 if input.iter().all(Option::is_none) {
                     return one(None);
                 }
-                let var = self.arena.var(
-                    format!("keccak@{}", p.pc),
-                    Sort::Word,
-                    result.unwrap_or_default(),
-                );
-                self.hashes.push(Hash {
-                    pc: p.pc,
-                    var,
-                    input,
-                });
+                let var = self.arena.var(format!("keccak@{}", p.pc), Sort::Word, result.unwrap_or_default());
+                self.hashes.push(Hash { pc: p.pc, var, input });
                 one(Some(var))
             }
-            op::CALLER
-            | op::CALLVALUE
-            | op::ORIGIN
-            | op::TIMESTAMP
-            | op::NUMBER
-            | op::DIFFICULTY => {
+            op::CALLER | op::CALLVALUE | op::ORIGIN | op::TIMESTAMP | op::NUMBER | op::DIFFICULTY => {
                 let top = f == 0;
                 let (on, name) = match o {
                     op::CALLER => (self.sym.caller && top, "caller"),
@@ -513,12 +433,7 @@ impl Shadow {
                 self.concretize(address, p, 0);
                 let off = usize_of(p.vals[0]);
                 let cd = &self.frames[f].calldata;
-                let bytes: Vec<_> = (0..32)
-                    .map(|i| {
-                        off.checked_add(i)
-                            .and_then(|j| cd.get(j).copied().flatten())
-                    })
-                    .collect();
+                let bytes: Vec<_> = (0..32).map(|i| off.checked_add(i).and_then(|j| cd.get(j).copied().flatten())).collect();
                 one(self.word_from(&bytes, result.unwrap_or_default()))
             }
             op::CALLDATACOPY | op::RETURNDATACOPY | op::CODECOPY | op::EXTCODECOPY | op::MCOPY => {
@@ -526,25 +441,15 @@ impl Shadow {
                 for i in 0..p.ins.len() {
                     self.concretize(address, p, i);
                 }
-                let (dest, src, len) = (
-                    usize_of(p.vals[base]),
-                    usize_of(p.vals[base + 1]),
-                    usize_of(p.vals[base + 2]),
-                );
+                let (dest, src, len) = (usize_of(p.vals[base]), usize_of(p.vals[base + 1]), usize_of(p.vals[base + 2]));
                 if len > MAX_RANGE {
                     return vec![];
                 }
                 let fr = &mut self.frames[f];
                 let bytes: Vec<Option<ExprId>> = match o {
-                    op::CALLDATACOPY => (0..len)
-                        .map(|i| fr.calldata.get(src + i).copied().flatten())
-                        .collect(),
-                    op::RETURNDATACOPY => (0..len)
-                        .map(|i| fr.returndata.get(src + i).copied().flatten())
-                        .collect(),
-                    op::MCOPY => (0..len)
-                        .map(|i| fr.memory.get(&(src + i)).copied())
-                        .collect(),
+                    op::CALLDATACOPY => (0..len).map(|i| fr.calldata.get(src + i).copied().flatten()).collect(),
+                    op::RETURNDATACOPY => (0..len).map(|i| fr.returndata.get(src + i).copied().flatten()).collect(),
+                    op::MCOPY => (0..len).map(|i| fr.memory.get(&(src + i)).copied()).collect(),
                     _ => vec![None; len],
                 };
                 for (i, b) in bytes.into_iter().enumerate() {
@@ -555,9 +460,7 @@ impl Shadow {
             op::MLOAD => {
                 self.concretize(address, p, 0);
                 let off = usize_of(p.vals[0]);
-                let bytes: Vec<_> = (0..32)
-                    .map(|i| self.frames[f].memory.get(&(off + i)).copied())
-                    .collect();
+                let bytes: Vec<_> = (0..32).map(|i| self.frames[f].memory.get(&(off + i)).copied()).collect();
                 one(self.word_from(&bytes, result.unwrap_or_default()))
             }
             op::MSTORE | op::MSTORE8 => {
@@ -565,9 +468,7 @@ impl Shadow {
                 let off = usize_of(p.vals[0]);
                 let bytes: Vec<Option<ExprId>> = match p.ins[1] {
                     None => vec![None; if o == op::MSTORE { 32 } else { 1 }],
-                    Some(t) if o == op::MSTORE => {
-                        (0..32).map(|i| Some(self.arena.extract(t, i))).collect()
-                    }
+                    Some(t) if o == op::MSTORE => (0..32).map(|i| Some(self.arena.extract(t, i))).collect(),
                     Some(t) => vec![Some(self.arena.extract(t, 31))],
                 };
                 for (i, b) in bytes.into_iter().enumerate() {
@@ -578,29 +479,19 @@ impl Shadow {
             }
             op::SLOAD | op::TLOAD => {
                 self.concretize(address, p, 0);
-                let map = if o == op::TLOAD {
-                    &self.transient
-                } else {
-                    &self.storage
-                };
+                let map = if o == op::TLOAD { &self.transient } else { &self.storage };
                 one(map.get(&(address, p.vals[0])).copied())
             }
             op::SSTORE | op::TSTORE => {
                 self.concretize(address, p, 0);
                 let transient = o == op::TSTORE;
                 let key = (address, p.vals[0]);
-                let map = if transient {
-                    &mut self.transient
-                } else {
-                    &mut self.storage
-                };
+                let map = if transient { &mut self.transient } else { &mut self.storage };
                 let prev = match p.ins[1] {
                     Some(t) => map.insert(key, t),
                     None => map.remove(&key),
                 };
-                self.frames[f]
-                    .journal
-                    .push((transient, address, p.vals[0], prev));
+                self.frames[f].journal.push((transient, address, p.vals[0], prev));
                 vec![]
             }
             op::JUMP => {
@@ -612,13 +503,7 @@ impl Shadow {
                 if let Some(c) = p.ins[1] {
                     let cond = self.arena.to_bool(c);
                     let code = self.frames[f].code;
-                    self.path.push(Decision {
-                        address,
-                        code,
-                        pc: p.pc,
-                        cond,
-                        jumped: !p.vals[1].is_zero(),
-                    });
+                    self.path.push(Decision { address, code, pc: p.pc, cond, jumped: !p.vals[1].is_zero() });
                 }
                 vec![]
             }
@@ -659,10 +544,7 @@ fn set(memory: &mut HashMap<usize, ExprId>, at: usize, b: Option<ExprId>) {
 
 /// Ops whose results revm pushes after a sub-frame, not in the op itself.
 fn pushes_later(o: u8) -> bool {
-    matches!(
-        o,
-        op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2
-    )
+    matches!(o, op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL | op::CREATE | op::CREATE2)
 }
 
 impl<CTX> Inspector<CTX> for Shadow {
@@ -678,83 +560,45 @@ impl<CTX> Inspector<CTX> for Shadow {
         let f = self.frames.last_mut().unwrap();
         // A CALL's or CREATE's result was pushed by revm after the sub-frame: it has no shadow.
         f.stack.resize(data.len(), None);
-        let n = OpCode::new(o)
-            .map_or(0, |c| c.inputs() as usize)
-            .min(data.len());
+        let n = OpCode::new(o).map_or(0, |c| c.inputs() as usize).min(data.len());
         let vals: Vec<U256> = data.iter().rev().take(n).copied().collect();
         let mut ins: Vec<Option<ExprId>> = (0..n).map(|_| f.stack.pop().unwrap()).collect();
         // A shadow whose value isn't the operand's any more went stale (state changed under it: a reverted frame
         // revm rolled back, a cheatcode, transient storage cleared between calls): it is dropped, not trusted.
         for (i, slot) in ins.iter_mut().enumerate() {
             if let Some(t) = *slot {
-                let v = if self.arena.sort(t) == Sort::Byte {
-                    None
-                } else {
-                    Some(self.arena.value(t))
-                };
+                let v = if self.arena.sort(t) == Sort::Byte { None } else { Some(self.arena.value(t)) };
                 if v != Some(vals[i]) {
                     *slot = None;
                     self.stale += 1;
                 }
             }
         }
-        let p = Pending {
-            op: o,
-            pc,
-            ins,
-            vals,
-        };
+        let p = Pending { op: o, pc, ins, vals };
         let address = f.address;
 
         match o {
             op::RETURN | op::REVERT => {
                 self.concretize(address, &p, 0);
                 self.concretize(address, &p, 1);
-                let (off, len) = (
-                    p.vals[0].saturating_to::<usize>(),
-                    p.vals[1].saturating_to::<usize>(),
-                );
+                let (off, len) = (p.vals[0].saturating_to::<usize>(), p.vals[1].saturating_to::<usize>());
                 let f = self.frames.last_mut().unwrap();
-                f.output = if len > MAX_RANGE {
-                    vec![]
-                } else {
-                    (0..len)
-                        .map(|i| f.memory.get(&(off + i)).copied())
-                        .collect()
-                };
+                f.output = if len > MAX_RANGE { vec![] } else { (0..len).map(|i| f.memory.get(&(off + i)).copied()).collect() };
             }
             op::STOP => self.frames.last_mut().unwrap().output = vec![],
             op::CALL | op::CALLCODE | op::DELEGATECALL | op::STATICCALL => {
                 for i in 0..p.ins.len() {
                     self.concretize(address, &p, i);
                 }
-                let args = if matches!(o, op::CALL | op::CALLCODE) {
-                    3
-                } else {
-                    2
-                };
-                let (off, len) = (
-                    p.vals[args].saturating_to::<usize>(),
-                    p.vals[args + 1].saturating_to::<usize>(),
-                );
+                let args = if matches!(o, op::CALL | op::CALLCODE) { 3 } else { 2 };
+                let (off, len) = (p.vals[args].saturating_to::<usize>(), p.vals[args + 1].saturating_to::<usize>());
                 let f = self.frames.last_mut().unwrap();
-                let args_shadow: Vec<Option<ExprId>> = if len > MAX_RANGE {
-                    vec![]
-                } else {
-                    (0..len)
-                        .map(|i| f.memory.get(&(off + i)).copied())
-                        .collect()
-                };
+                let args_shadow: Vec<Option<ExprId>> = if len > MAX_RANGE { vec![] } else { (0..len).map(|i| f.memory.get(&(off + i)).copied()).collect() };
                 // `vm.assume(cond)` with a symbolic condition: every solution must satisfy it, as the test does.
-                if p.vals[1] == U256::from_be_slice(HEVM.as_slice())
-                    && len >= 36
-                    && args_shadow[4..36].iter().any(Option::is_some)
-                {
+                if p.vals[1] == U256::from_be_slice(HEVM.as_slice()) && len >= 36 && args_shadow[4..36].iter().any(Option::is_some) {
                     let concrete = interp.memory.slice(off..off + 36).to_vec();
                     if concrete[..4] == ASSUME {
-                        if let Some(w) = self
-                            .word_from(&args_shadow[4..36], U256::from_be_slice(&concrete[4..36]))
-                        {
+                        if let Some(w) = self.word_from(&args_shadow[4..36], U256::from_be_slice(&concrete[4..36])) {
                             let c = self.arena.to_bool(w);
                             self.assumptions.push(c);
                         }
@@ -774,22 +618,15 @@ impl<CTX> Inspector<CTX> for Shadow {
     }
 
     fn step_end(&mut self, interp: &mut Interpreter, _: &mut CTX) {
-        let Some(f) = self.frames.last_mut() else {
-            return;
-        };
+        let Some(f) = self.frames.last_mut() else { return };
         let Some(p) = f.pending.take() else { return };
-        if pushes_later(p.op)
-            || matches!(p.op, op::RETURN | op::REVERT | op::STOP | op::SELFDESTRUCT)
-        {
+        if pushes_later(p.op) || matches!(p.op, op::RETURN | op::REVERT | op::STOP | op::SELFDESTRUCT) {
             return;
         }
         let top = interp.stack.data().last().copied();
         // A result that folded to a constant is concrete.
-        let outs: Vec<Option<ExprId>> = self
-            .model(&p, top)
-            .into_iter()
-            .map(|t| t.filter(|t| self.arena.constant(*t).is_none()))
-            .collect();
+        let outs: Vec<Option<ExprId>> =
+            self.model(&p, top).into_iter().map(|t| t.filter(|t| self.arena.constant(*t).is_none())).collect();
         let mut outs = outs;
         // A stored shadow whose value isn't what revm loads was overwritten where we couldn't see it (vm.store, a
         // rollback expectRevert hid, transient storage cleared between calls): stale, not a model bug. Forget it.
@@ -797,11 +634,7 @@ impl<CTX> Inspector<CTX> for Shadow {
             if let (Some(Some(t)), Some(evm)) = (outs.first().copied(), top) {
                 if self.arena.value(t) != evm {
                     let address = self.frames.last().unwrap().address;
-                    let map = if p.op == op::TLOAD {
-                        &mut self.transient
-                    } else {
-                        &mut self.storage
-                    };
+                    let map = if p.op == op::TLOAD { &mut self.transient } else { &mut self.storage };
                     map.remove(&(address, p.vals[0]));
                     outs[0] = None;
                     self.stale += 1;
@@ -815,14 +648,7 @@ impl<CTX> Inspector<CTX> for Shadow {
             let model = self.arena.value(t);
             self.checked += 1;
             if model != evm {
-                self.mismatches.push(Mismatch {
-                    address: f.address,
-                    pc: p.pc,
-                    op: p.op,
-                    operands: p.vals.clone(),
-                    evm,
-                    model,
-                });
+                self.mismatches.push(Mismatch { address: f.address, pc: p.pc, op: p.op, operands: p.vals.clone(), evm, model });
             }
         }
         let f = self.frames.last_mut().unwrap();
@@ -836,14 +662,8 @@ impl<CTX> Inspector<CTX> for Shadow {
     }
 
     fn call_end(&mut self, _: &mut CTX, inputs: &CallInputs, outcome: &mut CallOutcome) {
-        let precompile = outcome
-            .was_precompile_called
-            .then_some(inputs.bytecode_address);
-        self.pop_frame(
-            &outcome.result,
-            precompile,
-            Some(outcome.memory_offset.clone()),
-        );
+        let precompile = outcome.was_precompile_called.then_some(inputs.bytecode_address);
+        self.pop_frame(&outcome.result, precompile, Some(outcome.memory_offset.clone()));
     }
 
     fn create(&mut self, _: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {

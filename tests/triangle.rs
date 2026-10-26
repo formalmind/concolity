@@ -24,11 +24,7 @@ fn chain() -> Chain {
 fn calldata(selector: [u8; 4], args: [i64; 3]) -> Bytes {
     let mut d = selector.to_vec();
     for a in args {
-        let w = if a < 0 {
-            U256::from(a.unsigned_abs()).wrapping_neg()
-        } else {
-            U256::from(a as u64)
-        };
+        let w = if a < 0 { U256::from(a.unsigned_abs()).wrapping_neg() } else { U256::from(a as u64) };
         d.extend_from_slice(&w.to_be_bytes::<32>());
     }
     d.into()
@@ -36,21 +32,12 @@ fn calldata(selector: [u8; 4], args: [i64; 3]) -> Bytes {
 
 fn run(c: &Chain, data: Bytes) -> Run {
     let r = c.run(AT, data, U256::ZERO, Sym::default()).unwrap();
-    assert!(
-        r.shadow.mismatches.is_empty(),
-        "self-check failed: {:?}",
-        r.shadow.mismatches
-    );
+    assert!(r.shadow.mismatches.is_empty(), "self-check failed: {:?}", r.shadow.mismatches);
     r
 }
 
 fn show(r: &Run) -> String {
-    r.shadow
-        .path
-        .iter()
-        .map(|d| format!("{:#x}:{}", d.pc, if d.jumped { "jump" } else { "fall" }))
-        .collect::<Vec<_>>()
-        .join(" ")
+    r.shadow.path.iter().map(|d| format!("{:#x}:{}", d.pc, if d.jumped { "jump" } else { "fall" })).collect::<Vec<_>>().join(" ")
 }
 
 #[test]
@@ -58,16 +45,8 @@ fn triangle_paths_are_recorded() {
     let c = chain();
     for args in [[0, 0, 0], [1, 1, 2], [1, 2, 2], [2, 1, 2], [3, 4, 5]] {
         let r = run(&c, calldata(TRIANGLE, args));
-        let Outcome::Return(out) = &r.outcome else {
-            panic!("triangle{args:?} reverted")
-        };
-        eprintln!(
-            "triangle{args:?} = {}  path: {}  ({} steps, {} checked)",
-            out[31],
-            show(&r),
-            r.shadow.steps,
-            r.shadow.checked
-        );
+        let Outcome::Return(out) = &r.outcome else { panic!("triangle{args:?} reverted") };
+        eprintln!("triangle{args:?} = {}  path: {}  ({} steps, {} checked)", out[31], show(&r), r.shadow.steps, r.shadow.checked);
         assert!(!r.shadow.path.is_empty());
     }
 }
@@ -79,10 +58,7 @@ fn check_follows_the_call_into_triangle() {
         let r = run(&c, calldata(CHECK, args));
         let result = match &r.outcome {
             Outcome::Return(_) => "ok".to_string(),
-            Outcome::Revert(b) => format!(
-                "revert {}",
-                String::from_utf8_lossy(b.get(68..).unwrap_or(&[])).trim_matches('\0')
-            ),
+            Outcome::Revert(b) => format!("revert {}", String::from_utf8_lossy(b.get(68..).unwrap_or(&[])).trim_matches('\0')),
             Outcome::Halt(h) => h.clone(),
         };
         eprintln!("check{args:?}: {result}  path: {}", show(&r));
@@ -106,23 +82,9 @@ fn flipping_a_decision_reaches_the_other_side() {
         };
         let data = first.calldata_with(&model);
         let next = run(&c, data.clone());
-        let taken = next
-            .shadow
-            .path
-            .iter()
-            .find(|n| n.pc == d.pc)
-            .map(|n| n.jumped);
-        eprintln!(
-            "  {:#x} flipped → {}  path: {}",
-            d.pc,
-            hex::encode(&data[4..]),
-            show(&next)
-        );
-        assert_eq!(
-            taken,
-            Some(!d.jumped),
-            "the new input must take the other side at {:#x}",
-            d.pc
-        );
+        let taken = next.shadow.path.iter().find(|n| n.pc == d.pc).map(|n| n.jumped);
+        eprintln!("  {:#x} flipped → {}  path: {}", d.pc, hex::encode(&data[4..]), show(&next));
+        assert_eq!(taken, Some(!d.jumped), "the new input must take the other side at {:#x}", d.pc);
     }
 }
+
