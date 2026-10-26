@@ -167,7 +167,7 @@ pub fn branches(opts: &Options) -> Result<Branches> {
 
 /// The branch map if this code has been run with these options, without running anything.
 pub fn cached(opts: &Options) -> Option<Branches> {
-    branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok())
+    branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok()).filter(|b| !b.is_empty())
 }
 
 /// The branch map of this code, or else of the project's latest run with these options on an earlier tree (any change
@@ -181,7 +181,7 @@ pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
     let newest = std::fs::read_dir(file.parent()?)
         .ok()?
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().ends_with(&format!("-{suffix}")))
+        .filter(|e| e.file_name().to_string_lossy().ends_with(&format!("-{suffix}")) && e.metadata().is_ok_and(|m| m.len() > 2))
         .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
     let map = serde_json::from_str::<Branches>(&std::fs::read_to_string(newest.path()).ok()?).ok()?;
     Some((map, false))
@@ -191,6 +191,10 @@ pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
 /// the next `--at` or explore instant.
 pub fn remember(opts: &Options, report: &Report) -> Branches {
     let out: Branches = report.files.iter().flat_map(|(file, f)| f.branches.iter().map(move |((line, code, pc), (j, fl))| (file.clone(), *line, code.clone(), *pc, *j, *fl))).collect();
+    // A run that mapped nothing (no tests found, nothing compiled) isn't a result to keep.
+    if out.is_empty() {
+        return out;
+    }
     if let Some(f) = branches_file(opts) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
         let _ = std::fs::write(f, serde_json::to_string(&out).unwrap_or_default());
