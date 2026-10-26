@@ -167,7 +167,8 @@ The measures say when the spec is strong enough:
    *Built:* the explore loop, and reduction of each finding's inputs over ABI values (`src/reduce.rs`: numbers to 0,
    then bisection to the boundary, then bit clearing; lists by ddmin; booleans and addresses to their simplest).
 3. **Mutation-based and greybox fuzzing** (3, 4), on bytecode, sharing 1's coverage. Unverified contracts on a
-   fork.
+   fork. *Designed:* [docs/FUZZ.md](docs/FUZZ.md), `concolity fuzz`: sequences, crash and differential oracles, and
+   the hybrid of step 4.
 4. **Grammar fuzzing of functions** (6), with the hybrid: greybox runs until coverage plateaus, then concolity
    solves the stuck branches.
 5. **Information flow** (9), as a cheap mode of the shadow.
