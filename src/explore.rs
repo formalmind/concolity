@@ -12,6 +12,7 @@
 //! up), **inputs don't reach it** (the JUMPI ran, but its condition never depended on a fuzz input), **not
 //! reached**.
 
+use crate::paint;
 use crate::coverage::{self, Filters, Permissions, Rng};
 use crate::shadow::{Shadow, Sym};
 use crate::smt::{Answer, Solver};
@@ -785,18 +786,20 @@ impl Report {
         let count = |f: fn(&Outcome) -> bool| self.targets.values().filter(|x| f(x)).count();
         let _ = writeln!(
             o,
-            "{} untaken JUMPI sides: {} solved, {} unsat, {} unsat under pinned values, {} unknown, {} where inputs don't reach the condition, {} not reached",
-            self.targets.len(),
-            count(|x| matches!(x, Outcome::Solved { .. })),
-            count(|x| matches!(x, Outcome::Unsat { pinned: false, .. })),
-            count(|x| matches!(x, Outcome::Unsat { pinned: true, .. })),
-            count(|x| matches!(x, Outcome::Unknown { .. })),
+            "{} {}: {} solved, {} unsat, {} unsat under pinned values, {} unknown, {} where inputs don't reach the condition, {} not reached",
+            paint::bold(self.targets.len()),
+            paint::bold("untaken JUMPI sides"),
+            paint::count(count(|x| matches!(x, Outcome::Solved { .. })), paint::green),
+            paint::count(count(|x| matches!(x, Outcome::Unsat { pinned: false, .. })), paint::blue),
+            paint::count(count(|x| matches!(x, Outcome::Unsat { pinned: true, .. })), paint::blue),
+            paint::count(count(|x| matches!(x, Outcome::Unknown { .. })), paint::yellow),
             count(|x| matches!(x, Outcome::InputsDontReach)),
             count(|x| matches!(x, Outcome::NotReached)),
         );
-        let _ = writeln!(o, "{} runs, {} solver calls, {} malformed solutions dropped, {:.1}s", self.runs, self.solver_calls, self.malformed, self.time.as_secs_f64());
-        let _ = writeln!(o, "model self-check mismatches: {} {:?}; stale shadows dropped: {}", self.mismatches, self.mismatch_ops, self.stale);
-        let _ = writeln!(o, "values pinned, by opcode: {:?}\n", self.pinned_ops);
+        let _ = writeln!(o, "{}", paint::dim(format!("{} runs, {} solver calls, {} malformed solutions dropped, {:.1}s", self.runs, self.solver_calls, self.malformed, self.time.as_secs_f64())));
+        let mismatches = format!("model self-check mismatches: {} {:?}; stale shadows dropped: {}", self.mismatches, self.mismatch_ops, self.stale);
+        let _ = writeln!(o, "{}", if self.mismatches > 0 { paint::red(mismatches) } else { paint::dim(mismatches) });
+        let _ = writeln!(o, "{}\n", paint::dim(format!("values pinned, by opcode: {:?}", self.pinned_ops)));
         let mut last = String::new();
         let (mut unreached, mut uninfluenced) = (0, 0);
         for (side, out) in &self.targets {
@@ -813,29 +816,31 @@ impl Report {
                 _ => {}
             }
             if side.file != last {
-                let _ = writeln!(o, "{}", side.file);
+                let _ = writeln!(o, "{}", paint::cyan(paint::bold(&side.file)));
                 last = side.file.clone();
             }
             let what = match out {
                 Outcome::Solved { test, args, test_failed } => format!(
-                    "solved    by {test} [{args}]{}",
-                    test_failed.as_ref().map(|r| format!("  (test fails: {r})")).unwrap_or_default()
+                    "{} by {test} [{args}]{}",
+                    paint::green("solved   "),
+                    test_failed.as_ref().map(|r| paint::red(format!("  (test fails: {r})"))).unwrap_or_default()
                 ),
-                Outcome::Unsat { test, pinned } => format!("unsat{}  from {test}", if *pinned { " (under pinned values)" } else { "" }),
-                Outcome::Unknown { test } if test.is_empty() => "unknown   (reached symbolically, not solved within the budget)".into(),
-                Outcome::Unknown { test } => format!("unknown   (solver gave up, from {test})"),
-                Outcome::InputsDontReach => "inputs don't reach the condition".into(),
-                Outcome::NotReached => "not reached".into(),
+                Outcome::Unsat { test, pinned } => format!("{}  from {test}", paint::blue(format!("unsat{}", if *pinned { " (under pinned values)" } else { "" }))),
+                Outcome::Unknown { test } if test.is_empty() => format!("{} (reached symbolically, not solved within the budget)", paint::yellow("unknown  ")),
+                Outcome::Unknown { test } => format!("{} (solver gave up, from {test})", paint::yellow("unknown  ")),
+                Outcome::InputsDontReach => paint::dim("inputs don't reach the condition"),
+                Outcome::NotReached => paint::dim("not reached"),
             };
-            let _ = writeln!(o, "  :{:<5} {:<24} pc {:<6} {:<4}  {what}", side.line, side.code, side.pc, if side.jumped { "jump" } else { "fall" });
+            let place = paint::dim(format!("{:<24} pc {:<6} {:<4}", side.code, side.pc, if side.jumped { "jump" } else { "fall" }));
+            let _ = writeln!(o, "  {} {place}  {what}", paint::bold(format!(":{:<5}", side.line)));
         }
         if unreached + uninfluenced > 0 {
-            let _ = writeln!(o, "\n(not listed: {unreached} sides no harness ran, {uninfluenced} where the harnesses' inputs don't decide the branch; --json lists them)");
+            let _ = writeln!(o, "\n{}", paint::dim(format!("(not listed: {unreached} sides no harness ran, {uninfluenced} where the harnesses' inputs don't decide the branch; --json lists them)")));
         }
         if !self.findings.is_empty() {
-            let _ = writeln!(o, "\nfindings: solved inputs that make a test fail");
+            let _ = writeln!(o, "\n{}", paint::bold(paint::red("findings: solved inputs that make a test fail")));
             for f in &self.findings {
-                let _ = writeln!(o, "  {}  {}", f.test, f.reason);
+                let _ = writeln!(o, "  {}  {}", paint::red(paint::bold(&f.test)), f.reason);
                 let _ = writeln!(o, "    found    [{}]", f.args);
                 if !f.reduced.is_empty() && f.reduced != f.args {
                     let _ = writeln!(o, "    reduced  [{}]", f.reduced);

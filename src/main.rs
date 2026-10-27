@@ -2,8 +2,27 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+/// The help's colours, as cargo's: green headings, cyan commands and flags.
+const STYLES: clap::builder::Styles = clap::builder::Styles::styled()
+    .header(clap::builder::styling::AnsiColor::Green.on_default().bold())
+    .usage(clap::builder::styling::AnsiColor::Green.on_default().bold())
+    .literal(clap::builder::styling::AnsiColor::Cyan.on_default().bold())
+    .placeholder(clap::builder::styling::AnsiColor::Cyan.on_default());
+
+const EXAMPLES: &str = "\x1b[1;32mExamples:\x1b[0m (run in a Foundry project, or pass its folder)
+  concolity coverage                                  lines and JUMPI sides the suite runs, by file
+  concolity coverage --at src/Vault.sol:42            how often each side of that line's branch ran
+  concolity explore --target src/Vault.sol:42         inputs that take a side no test takes
+  concolity explore --only VaultTest                  explore through one test contract's fuzz tests
+  concolity debug . test/Vault.t.sol VaultTest::test_deposit revert
+                                                      why a test reverts, decoded
+  concolity help <command>                            every option of a command
+
+Colour is on at a terminal; NO_COLOR=1 turns it off. Add --json to coverage and explore for scripts.
+Source and docs: https://github.com/formalmind/concolity";
+
 #[derive(Parser)]
-#[command(name = "concolity", about = "Testing tools for EVM bytecode: coverage, concolic exploration")]
+#[command(name = "concolity", version, about = "Testing tools for EVM bytecode: coverage, concolic exploration and an agent debugger, for Foundry projects", styles = STYLES, after_help = EXAMPLES, arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -135,6 +154,8 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // Colour for people at a terminal; plain for pipes, files and NO_COLOR (and --json never has any).
+    concolity::paint::enable(concolity::paint::wanted());
     match Cli::parse().command {
         Command::Coverage { root, test_dir, skip, include, fuzz_runs, lcov, bindings, against_forge, fast, json, sarif, at } => {
             let opts = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs, fast };
@@ -146,11 +167,11 @@ fn main() -> Result<()> {
                     println!("{at}: no branch (JUMPI) on that line in the included files");
                 }
                 for (file, line, code, pc, j, fl) in &here {
-                    let side = |n: u64| if n == 0 { "never".to_string() } else { format!("{n}x") };
+                    let side = |n: u64| if n == 0 { concolity::paint::red("never") } else { concolity::paint::green(format!("{n}x")) };
                     if json {
                         println!("{}", serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl }));
                     } else {
-                        println!("{file}:{line}  {code} pc {pc}  jump {}  fall-through {}", side(*j), side(*fl));
+                        println!("{}  {}  jump {}  fall-through {}", concolity::paint::bold(format!("{file}:{line}")), concolity::paint::dim(format!("{code} pc {pc}")), side(*j), side(*fl));
                     }
                 }
                 return Ok(());

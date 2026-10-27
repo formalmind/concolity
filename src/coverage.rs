@@ -7,6 +7,7 @@
 //! precompile, a cheatcode, or **no code**, a call with calldata to an empty account: the program it meant to call
 //! isn't there, and everything behind it is unreachable for a reason the code didn't choose.
 
+use crate::paint;
 use alloy_dyn_abi::{DynSolType, DynSolValue};
 use anyhow::{Context as _, Result};
 use revm::primitives::{keccak256, Address, I256, U256};
@@ -1012,29 +1013,37 @@ impl Report {
         let count = |f: fn(&Status) -> bool| self.tests.iter().filter(|t| f(&t.status)).count();
         let _ = writeln!(
             o,
-            "tests: {} passed, {} failed, {} skipped   (compile {:.1}s, run {:.1}s)\n",
-            count(|s| *s == Status::Pass),
-            count(|s| matches!(s, Status::Fail(_))),
-            count(|s| matches!(s, Status::Skipped(_))),
-            self.compile_time.as_secs_f64(),
-            self.run_time.as_secs_f64()
+            "{} {} passed, {} failed, {} skipped   {}\n",
+            paint::bold("tests:"),
+            paint::count(count(|s| *s == Status::Pass), paint::green),
+            paint::count(count(|s| matches!(s, Status::Fail(_))), paint::red),
+            paint::count(count(|s| matches!(s, Status::Skipped(_))), paint::yellow),
+            paint::dim(format!("(compile {:.1}s, run {:.1}s)", self.compile_time.as_secs_f64(), self.run_time.as_secs_f64()))
         );
         let w = self.files.keys().map(String::len).max().unwrap_or(4).max(5);
-        let _ = writeln!(o, "{:w$}  {:>16}  {:>18}", "File", "Lines", "JUMPI sides");
+        let _ = writeln!(o, "{}", paint::bold(format!("{:w$}  {:>16}  {:>18}", "File", "Lines", "JUMPI sides")));
+        // Each percentage in its colour (padded first: the colour codes would count toward the width).
+        let row = |name: String, (lh, ln): (usize, usize), (bh, bn): (usize, usize)| {
+            format!(
+                "{name}  {} {}  {} {}",
+                paint::coverage(format!("{:>7}", pct(lh, ln)), lh, ln),
+                paint::dim(format!("{lh:>4}/{ln:<4}")),
+                paint::coverage(format!("{:>7}", pct(bh, bn)), bh, bn),
+                paint::dim(format!("{bh:>5}/{bn:<5}"))
+            )
+        };
         for (name, f) in &self.files {
-            let (lh, ln) = f.lines_hit();
-            let (bh, bn) = f.sides_hit();
-            let _ = writeln!(o, "{name:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}", pct(lh, ln), pct(bh, bn));
+            let _ = writeln!(o, "{}", row(format!("{name:w$}"), f.lines_hit(), f.sides_hit()));
         }
-        let ((lh, ln), (bh, bn)) = self.totals();
-        let _ = writeln!(o, "{:w$}  {:>7} {lh:>4}/{ln:<4}  {:>7} {bh:>5}/{bn:<5}", "Total", pct(lh, ln), pct(bh, bn));
+        let (lines, sides) = self.totals();
+        let _ = writeln!(o, "{}", row(paint::bold(format!("{:w$}", "Total")), lines, sides));
 
         let missing: Vec<_> = self.bindings.iter().filter(|b| b.missing && !b.varying).collect();
         let varying: Vec<_> = self.bindings.iter().filter(|b| b.missing && b.varying).collect();
         let sites = self.bindings.iter().map(|b| &b.site).collect::<BTreeSet<_>>().len();
-        let _ = writeln!(o, "\nbindings: {sites} call sites, {} with missing bytecode", missing.len());
+        let _ = writeln!(o, "\n{} {sites} call sites, {} with missing bytecode", paint::bold("bindings:"), paint::count(missing.len(), paint::red));
         for b in &missing {
-            let _ = writeln!(o, "  MISSING  {}  → {}  ({}×)", b.site, b.callee, b.count);
+            let _ = writeln!(o, "  {}  {}  → {}  {}", paint::red("MISSING"), b.site, b.callee, paint::dim(format!("({}×)", b.count)));
         }
         if !varying.is_empty() {
             let _ = writeln!(o, "  calls to empty accounts whose address came from the inputs (by design in most tests):");
@@ -1051,13 +1060,13 @@ impl Report {
             let _ = writeln!(o, "  {} pieces of code ran that this compile didn't produce (etched or mocked)", self.foreign_code);
         }
         if !self.unsupported.is_empty() {
-            let _ = writeln!(o, "\nunsupported cheatcodes, by failed tests:");
+            let _ = writeln!(o, "\n{}", paint::bold("unsupported cheatcodes, by failed tests:"));
             for (sel, n) in &self.unsupported {
                 let _ = writeln!(o, "  {sel}  {n}×");
             }
         }
         if !self.compile_errors.is_empty() {
-            let _ = writeln!(o, "\ndidn't compile ({}):", self.compile_errors.len());
+            let _ = writeln!(o, "\n{}", paint::red(paint::bold(format!("didn't compile ({}):", self.compile_errors.len()))));
             for e in &self.compile_errors {
                 let first: String = e.lines().take(3).collect::<Vec<_>>().join(" | ");
                 let _ = writeln!(o, "  {}", first.chars().take(300).collect::<String>());
@@ -1070,9 +1079,9 @@ impl Report {
             }
         }
         if !skipped.is_empty() {
-            let _ = writeln!(o, "\nskipped:");
+            let _ = writeln!(o, "\n{}", paint::bold(paint::yellow("skipped:")));
             for (why, list) in &skipped {
-                let _ = writeln!(o, "  {why}: {}", list.len());
+                let _ = writeln!(o, "  {}: {}", paint::yellow(why), list.len());
                 for t in list {
                     let _ = writeln!(o, "    {t}");
                 }
@@ -1080,10 +1089,10 @@ impl Report {
         }
         let failed: Vec<_> = self.tests.iter().filter(|t| matches!(t.status, Status::Fail(_))).collect();
         if !failed.is_empty() {
-            let _ = writeln!(o, "\nfailed:");
+            let _ = writeln!(o, "\n{}", paint::bold(paint::red("failed:")));
             for t in failed {
                 if let Status::Fail(why) = &t.status {
-                    let _ = writeln!(o, "  {}::{}  {}", t.contract, t.test, why);
+                    let _ = writeln!(o, "  {}  {}", paint::red(format!("{}::{}", t.contract, t.test)), why);
                 }
             }
         }
