@@ -1,0 +1,33 @@
+[package]
+name = "sol-debug"
+version = "0.1.0"
+edition = "2021"
+description = "A local Solidity debugger: solc source maps to every opcode, revm to run it, storage decoded by the storage layout"
+license = "MIT"
+repository = "https://github.com/formalmind/concolity"
+homepage = "https://formal.team"
+readme = "README.md"
+keywords = ["solidity", "debugger", "evm", "revm", "tui"]
+categories = ["development-tools::debugging", "command-line-utilities"]
+
+[dependencies]
+alloy-dyn-abi = { version = "1", features = ["eip712"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+k256 = { version = "0.14", features = ["ecdsa"] }
+formal-ast = { git = "https://github.com/formalmind/formalmind", branch = "main" }
+ratatui = "0.30"
+revm = { version = "43", default-features = false, features = ["std"] }
+opaline = { version = "0.4.1", default-features = false, features = ["builtin-themes"] }
+serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"] }
+toml = "1.1"
+tree-sitter-highlight = "0.25"
+tree-sitter-solidity = "1.2.13"
+ureq = "3"
+
+[[bin]]
+name = "sol-debug"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"

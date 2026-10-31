@@ -10,7 +10,7 @@ Symbolic tools reason about every path from the start, and they stall in deep pr
 two: it runs as fast as a fuzzer and solves one branch at a time.
 
 Branches are reported in Solidity, by line and AST node, through
-[sol-debug](https://crates.io/crates/sol-debug)'s source maps. Every solved input is a call sequence that replays in
+[sol-debug](crates/sol-debug)'s source maps (the Foundry runner, a crate of this repository). Every solved input is a call sequence that replays in
 the debugger and becomes a Foundry test. It also runs on Huff and on bare bytecode, where it reports by pc.
 
 The design follows the `ConcolicTracer` of [The Fuzzing Book](https://www.fuzzingbook.org/html/ConcolicFuzzer.html),
@@ -27,6 +27,7 @@ result gets its symbolic term, every step is checked against revm, and z3 solves
 triangle every branch flips to an input that takes the other side. Next: the trace tree, so it explores on its own.
 
 ```
+cargo install --path .        # `concolity` in ~/.cargo/bin; brew install z3 for explore
 cargo test --release          # needs z3 on PATH
 ```
 

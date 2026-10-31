@@ -17,10 +17,13 @@ clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 regex = "1"
 toml = "0.8"
-# The Foundry test runner, cheatcodes and source maps. Until sol-debug's coverage mode is on crates.io, from the
-# formalmind main (a local checkout can override it in .cargo/config.toml, which git ignores).
-sol-debug = { git = "https://github.com/formalmind/formalmind", branch = "main" }
+# The Foundry test runner, cheatcodes and source maps: a crate of this repository since formalmind dropped its
+# debugger (nothing else used it). formal-ast (solc's AST, foundry.toml, the project's remappings) stays in formalmind.
+sol-debug = { path = "crates/sol-debug" }
 formal-ast = { git = "https://github.com/formalmind/formalmind", branch = "main" }
+
+[workspace]
+members = ["crates/sol-debug"]
 
 [[bin]]
 name = "concolity"
