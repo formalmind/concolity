@@ -19,7 +19,7 @@ regex = "1"
 toml = "0.8"
 # The Foundry test runner, cheatcodes and source maps: a crate of this repository since formalmind dropped its
 # debugger (nothing else used it). formal-ast (solc's AST, foundry.toml, the project's remappings) stays in formalmind.
-sol-debug = { path = "crates/sol-debug" }
+sol-debug = { path = "crates/sol-debug", default-features = false }
 formal-ast = { git = "https://github.com/formalmind/formalmind", branch = "main" }
 
 [workspace]

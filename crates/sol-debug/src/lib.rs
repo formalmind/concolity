@@ -6,6 +6,7 @@ pub mod agent;
 pub mod fork;
 pub mod cheats;
 pub mod diff;
+#[cfg(feature = "tui")]
 pub mod highlight;
 pub mod layout;
 pub mod nav;
@@ -15,8 +16,10 @@ pub mod solc;
 pub mod source;
 pub mod srcmap;
 pub mod statediff;
+#[cfg(feature = "tui")]
 pub mod theme;
 pub mod trace;
+#[cfg(feature = "tui")]
 pub mod tui;
 
 pub use session::{Run, Session, StorageWrite, TestRun, SENDER};

@@ -132,6 +132,18 @@ pub struct Report {
 /// Every JUMPI of the included files with how often each side ran: (file, line, artifact, pc, jumped, fell through).
 pub type Branches = Vec<(String, usize, String, usize, u64, u64)>;
 
+/// Line counts by file, as the cache keeps them next to the branch map.
+pub type Lines = BTreeMap<String, BTreeMap<usize, u64>>;
+
+/// A suite's coverage as a page or an editor reads it: the branch map and the line counts, of this tree
+/// (`current`) or of the project's latest run with the same options.
+#[derive(Debug, Clone)]
+pub struct Map {
+    pub branches: Branches,
+    pub lines: Lines,
+    pub current: bool,
+}
+
 fn fnv64(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
 }
@@ -176,26 +188,61 @@ pub fn branches(opts: &Options) -> Result<Branches> {
     Ok(remember(opts, &run(opts)?))
 }
 
-/// The branch map if this code has been run with these options, without running anything.
-pub fn cached(opts: &Options) -> Option<Branches> {
-    branches_file(opts).and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Branches>(&t).ok()).filter(|b| !b.is_empty())
+fn read_branches(file: &Path) -> Option<Branches> {
+    serde_json::from_str::<Branches>(&std::fs::read_to_string(file).ok()?).ok().filter(|b| !b.is_empty())
 }
 
-/// The branch map of this code, or else of the project's latest run with these options on an earlier tree (any change
-/// since, even an untracked file, makes a new tree): the map and whether it is of this tree. Runs nothing.
-pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
-    if let Some(b) = cached(opts) {
-        return Some((b, true));
-    }
+/// The line counts kept next to a branch map (`<k>.lines.json`); empty for a map an older build wrote.
+fn lines_file(branches: &Path) -> PathBuf {
+    let name = branches.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    branches.with_file_name(format!("{}.lines.json", name.trim_end_matches(".json")))
+}
+
+/// The branch-map file of this tree if a run left one, else the project's newest with the same options (any change
+/// since, even an untracked file, makes a new tree): the file and whether it is this tree's.
+fn latest_file(opts: &Options) -> Option<(PathBuf, bool)> {
     let file = branches_file(opts)?;
+    if file.metadata().is_ok_and(|m| m.len() > 2) {
+        return Some((file, true));
+    }
     let suffix = file.file_name()?.to_string_lossy().rsplit_once('-')?.1.to_string();
     let newest = std::fs::read_dir(file.parent()?)
         .ok()?
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().ends_with(&format!("-{suffix}")) && e.metadata().is_ok_and(|m| m.len() > 2))
         .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
-    let map = serde_json::from_str::<Branches>(&std::fs::read_to_string(newest.path()).ok()?).ok()?;
-    Some((map, false))
+    Some((newest.path(), false))
+}
+
+/// The branch map if this code has been run with these options, without running anything.
+pub fn cached(opts: &Options) -> Option<Branches> {
+    latest_file(opts).filter(|(_, now)| *now).and_then(|(f, _)| read_branches(&f))
+}
+
+/// The branch map of this code, or else of the project's latest run with these options: the map and whether it is
+/// of this tree. Runs nothing.
+pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
+    let (file, now) = latest_file(opts)?;
+    Some((read_branches(&file)?, now))
+}
+
+/// Branches and lines, of this tree or of the latest run. Runs nothing.
+pub fn latest_map(opts: &Options) -> Option<Map> {
+    let (file, current) = latest_file(opts)?;
+    let branches = read_branches(&file)?;
+    let lines = std::fs::read_to_string(lines_file(&file)).ok().and_then(|t| serde_json::from_str::<Lines>(&t).ok()).unwrap_or_default();
+    Some(Map { branches, lines, current })
+}
+
+/// Runs the suite and keeps its branches and lines for `latest_map`.
+pub fn run_map(opts: &Options) -> Result<Map> {
+    let report = run(opts)?;
+    let branches = remember(opts, &report);
+    Ok(Map { branches, lines: lines_of(&report), current: true })
+}
+
+fn lines_of(report: &Report) -> Lines {
+    report.files.iter().map(|(file, f)| (file.clone(), f.lines.clone())).collect()
 }
 
 /// Caches a run's branch map for `branches`, so a caller that ran the suite itself (the desktop app's coverage) makes
@@ -208,7 +255,8 @@ pub fn remember(opts: &Options, report: &Report) -> Branches {
     }
     if let Some(f) = branches_file(opts) {
         let _ = std::fs::create_dir_all(f.parent().unwrap());
-        let _ = std::fs::write(f, serde_json::to_string(&out).unwrap_or_default());
+        let _ = std::fs::write(&f, serde_json::to_string(&out).unwrap_or_default());
+        let _ = std::fs::write(lines_file(&f), serde_json::to_string(&lines_of(report)).unwrap_or_default());
     }
     out
 }
