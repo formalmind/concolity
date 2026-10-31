@@ -166,12 +166,18 @@ fn main() -> Result<()> {
                 if here.is_empty() {
                     println!("{at}: no branch (JUMPI) on that line in the included files");
                 }
-                for (file, line, code, pc, j, fl) in &here {
+                for (file, line, code, pc, j, fl, kinds) in &here {
                     let side = |n: u64| if n == 0 { concolity::paint::red("never") } else { concolity::paint::green(format!("{n}x")) };
                     if json {
-                        println!("{}", serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl }));
+                        println!("{}", serde_json::json!({ "file": file, "line": line, "code": code, "pc": pc, "jumped": j, "fell": fl, "jump_reverts": kinds & 1 != 0, "fall_reverts": kinds & 2 != 0 }));
                     } else {
-                        println!("{}  {}  jump {}  fall-through {}", concolity::paint::bold(format!("{file}:{line}")), concolity::paint::dim(format!("{code} pc {pc}")), side(*j), side(*fl));
+                        let reverts = match kinds {
+                            1 => "  the jump side reverts",
+                            2 => "  the fall-through side reverts",
+                            3 => "  both sides revert",
+                            _ => "",
+                        };
+                        println!("{}  {}  jump {}  fall-through {}{}", concolity::paint::bold(format!("{file}:{line}")), concolity::paint::dim(format!("{code} pc {pc}")), side(*j), side(*fl), concolity::paint::dim(reverts));
                     }
                 }
                 return Ok(());
@@ -209,7 +215,7 @@ fn main() -> Result<()> {
             };
             let coverage = concolity::coverage::Options { root: root.clone(), test_dir, skip, include, fuzz_runs: 32, fast: false };
             let opts = concolity::explore::Options { coverage, runs_per_test, flips_per_run, timeout_ms, seeds, only, target, campaign: None };
-            let report = concolity::explore::run(&opts)?;
+            let report = concolity::explore::run_and_remember(&opts)?;
             if let Some(path) = sarif {
                 concolity::sarif::write(&path, concolity::sarif::explore_run(&root, &report))?;
                 eprintln!("sarif: {}", path.display());

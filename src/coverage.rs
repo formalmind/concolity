@@ -72,6 +72,65 @@ pub struct FileCoverage {
     pub lines: BTreeMap<usize, u64>,
     /// (line, artifact, pc) → (jumped, fell through), for every `JUMPI`.
     pub branches: BTreeMap<(usize, String, usize), (u64, u64)>,
+    /// (line, artifact, pc) → which sides end in a revert (`side_kinds`): 1 the jump side, 2 the fall-through side.
+    pub kinds: BTreeMap<(usize, String, usize), u8>,
+}
+
+/// Which sides of the `JUMPI` at `pc` end in a revert, as bits: 1 the jump side, 2 the fall-through side. Each side's
+/// block is scanned to its end (a constant `JUMP` is followed once). solc puts `require`'s and `if … revert`'s revert on
+/// the fall-through side, so a guard whose failing side no test takes reads as "the fall-through side reverts and was
+/// never taken": the usual untested error path, as opposed to a happy path nobody runs.
+pub fn side_kinds(code: &[u8], pc: usize) -> u8 {
+    // The instruction before the JUMPI: its PUSH names the jump target.
+    let mut at = 0;
+    let mut prev = None;
+    while at < pc {
+        prev = Some(at);
+        at += 1 + push_width(code[at]);
+    }
+    let mut kinds = 0;
+    if prev.and_then(|p| push_value(code, p)).is_some_and(|t| block_reverts(code, t, 2)) {
+        kinds |= 1;
+    }
+    if block_reverts(code, pc + 1, 2) {
+        kinds |= 2;
+    }
+    kinds
+}
+
+fn push_width(op: u8) -> usize {
+    if (0x60..=0x7f).contains(&op) { (op - 0x5f) as usize } else { 0 }
+}
+
+/// The constant a PUSH1..PUSH4 at `at` pushes (a jump target); None for anything else.
+fn push_value(code: &[u8], at: usize) -> Option<usize> {
+    let n = push_width(*code.get(at)?);
+    if n == 0 || n > 4 {
+        return None;
+    }
+    Some(code.get(at + 1..at + 1 + n)?.iter().fold(0usize, |a, b| (a << 8) | *b as usize))
+}
+
+/// Whether the block starting at `pc` ends in REVERT or INVALID, following a constant JUMP `depth` times.
+fn block_reverts(code: &[u8], mut pc: usize, depth: u8) -> bool {
+    let mut last_push = None;
+    for _ in 0..8192 {
+        let Some(&op) = code.get(pc) else { return false };
+        match op {
+            0xfd | 0xfe => return true,
+            0x00 | 0xf3 | 0xff | 0x57 => return false,
+            0x56 => return depth > 0 && last_push.is_some_and(|t| block_reverts(code, t, depth - 1)),
+            0x60..=0x7f => {
+                last_push = push_value(code, pc);
+                pc += 1 + push_width(op);
+            }
+            _ => {
+                last_push = None;
+                pc += 1;
+            }
+        }
+    }
+    false
 }
 
 impl FileCoverage {
@@ -130,7 +189,27 @@ pub struct Report {
 }
 
 /// Every JUMPI of the included files with how often each side ran: (file, line, artifact, pc, jumped, fell through).
-pub type Branches = Vec<(String, usize, String, usize, u64, u64)>;
+/// (file, line, artifact, pc, jumped, fell through, which sides revert as `side_kinds` bits).
+pub type Branches = Vec<(String, usize, String, usize, u64, u64, u8)>;
+
+/// What explore learned about one untaken side, kept next to the branch map (`explore::remember`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Explored {
+    pub file: String,
+    pub line: usize,
+    pub code: String,
+    pub pc: usize,
+    pub jumped: bool,
+    /// solved, unsat, unsat_pinned, unknown, inputs_dont_reach, not_reached.
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// Solved, and the test then failed with this reason: a finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_failed: Option<String>,
+}
 
 /// Line counts by file, as the cache keeps them next to the branch map.
 pub type Lines = BTreeMap<String, BTreeMap<usize, u64>>;
@@ -141,6 +220,8 @@ pub type Lines = BTreeMap<String, BTreeMap<usize, u64>>;
 pub struct Map {
     pub branches: Branches,
     pub lines: Lines,
+    /// What explore has learned about untaken sides of this map, if it ran.
+    pub explored: Vec<Explored>,
     pub current: bool,
 }
 
@@ -171,7 +252,7 @@ pub fn tree_key(root: &Path) -> Option<String> {
 
 /// Where the suite's branch map is cached (~/.cache/formalmind/coverage), by the project's real path, the tree and the
 /// options. None outside git.
-fn branches_file(opts: &Options) -> Option<PathBuf> {
+pub(crate) fn branches_file(opts: &Options) -> Option<PathBuf> {
     let key = tree_key(&opts.root).map(|t| format!("{t}-{:016x}", fnv64(format!("{}|{:?}|{:?}|{}|{}|{}", opts.tests(), opts.skip, opts.include, opts.fuzz_runs, opts.fast, formal_ast::foundry::profile_name()).as_bytes())));
     // The project by its real path: `.` and /abs/path are the same project.
     let real = std::fs::canonicalize(&opts.root).unwrap_or_else(|_| opts.root.clone());
@@ -194,8 +275,21 @@ fn read_branches(file: &Path) -> Option<Branches> {
 
 /// The line counts kept next to a branch map (`<k>.lines.json`); empty for a map an older build wrote.
 fn lines_file(branches: &Path) -> PathBuf {
+    sibling(branches, "lines")
+}
+
+/// What explore learned, next to the branch map (`<k>.explore.json`).
+pub(crate) fn explore_file(branches: &Path) -> PathBuf {
+    sibling(branches, "explore")
+}
+
+fn sibling(branches: &Path, what: &str) -> PathBuf {
     let name = branches.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    branches.with_file_name(format!("{}.lines.json", name.trim_end_matches(".json")))
+    branches.with_file_name(format!("{}.{what}.json", name.trim_end_matches(".json")))
+}
+
+pub(crate) fn read_explored(branches: &Path) -> Vec<Explored> {
+    std::fs::read_to_string(explore_file(branches)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
 /// The branch-map file of this tree if a run left one, else the project's newest with the same options (any change
@@ -232,14 +326,15 @@ pub fn latest_map(opts: &Options) -> Option<Map> {
     let (file, current) = latest_file(opts)?;
     let branches = read_branches(&file)?;
     let lines = serde_json::from_str::<Lines>(&std::fs::read_to_string(lines_file(&file)).ok()?).ok()?;
-    Some(Map { branches, lines, current })
+    Some(Map { branches, lines, explored: read_explored(&file), current })
 }
 
 /// Runs the suite and keeps its branches and lines for `latest_map`.
 pub fn run_map(opts: &Options) -> Result<Map> {
     let report = run(opts)?;
     let branches = remember(opts, &report);
-    Ok(Map { branches, lines: lines_of(&report), current: true })
+    let explored = branches_file(opts).map(|f| read_explored(&f)).unwrap_or_default();
+    Ok(Map { branches, lines: lines_of(&report), explored, current: true })
 }
 
 fn lines_of(report: &Report) -> Lines {
@@ -249,7 +344,11 @@ fn lines_of(report: &Report) -> Lines {
 /// Caches a run's branch map for `branches`, so a caller that ran the suite itself (the desktop app's coverage) makes
 /// the next `--at` or explore instant.
 pub fn remember(opts: &Options, report: &Report) -> Branches {
-    let out: Branches = report.files.iter().flat_map(|(file, f)| f.branches.iter().map(move |((line, code, pc), (j, fl))| (file.clone(), *line, code.clone(), *pc, *j, *fl))).collect();
+    let out: Branches = report
+        .files
+        .iter()
+        .flat_map(|(file, f)| f.branches.iter().map(move |((line, code, pc), (j, fl))| (file.clone(), *line, code.clone(), *pc, *j, *fl, f.kinds.get(&(*line, code.clone(), *pc)).copied().unwrap_or(0))))
+        .collect();
     // A run that mapped nothing (no tests found, nothing compiled) isn't a result to keep.
     if out.is_empty() {
         return out;
@@ -541,6 +640,7 @@ pub fn run(opts: &Options) -> Result<Report> {
             for (line, n) in f.lines {
                 *into.lines.entry(line).or_insert(0) += n;
             }
+            into.kinds.extend(f.kinds);
             for (k, (j, fl)) in f.branches {
                 let b = into.branches.entry(k).or_insert((0, 0));
                 b.0 += j;
@@ -647,6 +747,7 @@ fn run_units(project: &formal_ast::solc::Project, units: Vec<(Vec<String>, serde
             for (line, n) in f.lines {
                 *into.lines.entry(line).or_insert(0) += n;
             }
+            into.kinds.extend(f.kinds);
             for (k, (j, fl)) in f.branches {
                 let b = into.branches.entry(k).or_insert((0, 0));
                 b.0 += j;
@@ -876,6 +977,7 @@ pub(crate) fn map_coverage(s: &Session, cov: &Coverage, include: &[String]) -> (
             let fc = files.entry(file).or_default();
             if map.code.get(pc) == Some(&revm::bytecode::opcode::JUMPI) {
                 let (j, f) = hits.and_then(|h| h.jumps.get(&pc)).copied().unwrap_or((0, 0));
+                fc.kinds.entry((line, label.clone(), pc)).or_insert_with(|| side_kinds(&map.code, pc));
                 let b = fc.branches.entry((line, label.clone(), pc)).or_insert((0, 0));
                 b.0 += j;
                 b.1 += f;

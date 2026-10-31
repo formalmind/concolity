@@ -309,7 +309,7 @@ pub fn run(opts: &Options) -> Result<Report> {
     let cov = if opts.campaign.is_some() { vec![] } else { coverage::branches(&opts.coverage)? };
     let mut targets: HashMap<(String, usize, bool), Side> = HashMap::new();
     let mut reached: HashSet<(String, usize)> = HashSet::new();
-    for (file, line, code, pc, j, fl) in &cov {
+    for (file, line, code, pc, j, fl, _) in &cov {
         if *j > 0 || *fl > 0 {
             reached.insert((code.clone(), *pc));
         }
@@ -743,6 +743,28 @@ fn explore_test(
             }
         }
     }
+}
+
+/// Keeps what this run learned about each untaken side next to the suite's branch map, merged with earlier runs
+/// (a narrow `--target` run updates its sides and leaves the rest), for editors and pages that read the map.
+pub fn remember(copts: &coverage::Options, report: &Report) {
+    let Some(branches) = coverage::branches_file(copts) else { return };
+    let key = |e: &coverage::Explored| (e.file.clone(), e.line, e.code.clone(), e.pc, e.jumped);
+    let mut all: BTreeMap<_, coverage::Explored> = coverage::read_explored(&branches).into_iter().map(|e| (key(&e), e)).collect();
+    for t in report.to_json()["targets"].as_array().into_iter().flatten() {
+        if let Ok(e) = serde_json::from_value::<coverage::Explored>(t.clone()) {
+            all.insert(key(&e), e);
+        }
+    }
+    let _ = std::fs::create_dir_all(branches.parent().unwrap());
+    let _ = std::fs::write(coverage::explore_file(&branches), serde_json::to_string(&all.into_values().collect::<Vec<_>>()).unwrap_or_default());
+}
+
+/// `run`, and the outcomes kept for the map.
+pub fn run_and_remember(opts: &Options) -> Result<Report> {
+    let report = run(opts)?;
+    remember(&opts.coverage, &report);
+    Ok(report)
 }
 
 impl Report {
