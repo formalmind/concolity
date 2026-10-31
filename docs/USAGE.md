@@ -87,8 +87,9 @@ Bottom-up:
    explore targets.
 
 `--at file:line` answers for one line without the summary: each JUMPI there, in which contract's bytecode, with its
-jump and fall-through counts. It reads the branch map the last run of this code left, so it's instant until the code
-changes.
+jump and fall-through counts, and which side ends in a revert. "fall-through never, the fall-through side reverts" is
+a guard no test fires: the usual untested error path, as opposed to a happy path nobody runs. It reads the branch map
+the last run of this code left, so it's instant until the code changes.
 
 ### `--json`
 
@@ -123,6 +124,9 @@ coverage first otherwise. Each untaken side ends as one of:
 | **not reached** | no fuzz test runs the code at all | write a fuzz test for that function |
 
 Findings come reduced: each argument as simple as it can be while the test still fails for the same reason.
+
+What a run learns about each side is kept next to the branch map in the cache (`<k>.explore.json`; a `--target` run
+updates its sides and leaves the rest), so editors and later runs can grade a side by it without running again.
 
 ## debug
 
@@ -177,7 +181,7 @@ The first run is written up in [case-studies/async-swap/BENCH-2026-10-26.md](../
 | | |
 |---|---|
 | `~/.cache/formalmind/solc/` | solc's output per batch of test files, keyed by every `.sol` file in the closure, the settings and the remappings. An unchanged rerun skips solc. Safe to delete. |
-| `~/.cache/formalmind/coverage/` | the branch map of each run, keyed by the project's real path, the git tree (HEAD, the diff, untracked files by size and time), the options and the profile. `--at` and explore read it. A run that found no tests leaves nothing. Safe to delete. |
+| `~/.cache/formalmind/coverage/` | per run: the branch map (`<k>.json`, with which side of each JUMPI reverts), the line counts (`<k>.lines.json`) and what explore learned (`<k>.explore.json`), keyed by the project's real path, the git tree (HEAD, the diff, untracked files by size and time), the options and the profile. `--at`, explore and the language server read them. A run that found no tests leaves nothing. Safe to delete. |
 | `.formal/findings.sarif` | what `--sarif` writes into the project: one SARIF run per command, merged, for editors. |
 | `FOUNDRY_PROFILE` | the foundry.toml profile, as forge. |
 | `CONCOLITY_DEBUG=1` | explore prints each run's decisions and pinned values. |
