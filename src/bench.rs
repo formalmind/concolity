@@ -198,6 +198,9 @@ impl Forge<'_> {
         }
         // Invariant tests in the same files are someone else's campaign.
         c.env("FOUNDRY_INVARIANT_RUNS", "0");
+        // A time-boxed run makes far more than forge's 65,536 rejected inputs on a test whose `vm.assume` rejects
+        // most of the space (FullMath's); reaching the limit would end the run as a "failure" with no input.
+        c.env("FOUNDRY_FUZZ_MAX_TEST_REJECTS", "1000000000");
         c
     }
 
@@ -244,6 +247,10 @@ impl Forge<'_> {
             let contract = suite.rsplit(':').next().unwrap_or(suite);
             for (sig, r) in s["test_results"].as_object().into_iter().flatten() {
                 if r["status"] != "Failure" {
+                    continue;
+                }
+                // Not a verdict on the mutant: the run ran out of accepted inputs.
+                if r["reason"].as_str().is_some_and(|m| m.contains("rejected too many inputs")) {
                     continue;
                 }
                 let calldata = find_calldata(&r["counterexample"]).unwrap_or_default();
