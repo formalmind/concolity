@@ -405,6 +405,10 @@ pub fn run(opts: &Options) -> Result<Value> {
         }
     }
     let tests: HashSet<String> = all.iter().filter(|t| !failing.contains_key(*t)).cloned().collect();
+    // From here on forge runs only the tests the mutants are judged by: a test that fails on the original would end
+    // a --fail-fast run before the others got their turn, and every mutant would look survived.
+    let kept: BTreeSet<&str> = tests.iter().map(|t| t.split("::").nth(1).unwrap_or(t).split('(').next().unwrap_or(t)).collect();
+    forge.test_regex = format!("^({})\\(", kept.iter().map(|n| regex::escape(n)).collect::<Vec<_>>().join("|"));
 
     // The mutants: operator sites in the mutated files, on lines either tool's baseline ran.
     let project = formal_ast::solc::Project::load(&opts.root)?;
