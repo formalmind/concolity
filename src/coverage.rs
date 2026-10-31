@@ -226,11 +226,12 @@ pub fn latest(opts: &Options) -> Option<(Branches, bool)> {
     Some((read_branches(&file)?, now))
 }
 
-/// Branches and lines, of this tree or of the latest run. Runs nothing.
+/// Branches and lines, of this tree or of the latest run. Runs nothing. A branch map an older build wrote without
+/// its line counts isn't a map: None, so the caller runs the suite and gets both.
 pub fn latest_map(opts: &Options) -> Option<Map> {
     let (file, current) = latest_file(opts)?;
     let branches = read_branches(&file)?;
-    let lines = std::fs::read_to_string(lines_file(&file)).ok().and_then(|t| serde_json::from_str::<Lines>(&t).ok()).unwrap_or_default();
+    let lines = serde_json::from_str::<Lines>(&std::fs::read_to_string(lines_file(&file)).ok()?).ok()?;
     Some(Map { branches, lines, current })
 }
 
