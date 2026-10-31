@@ -55,6 +55,26 @@ A result carries:
 concolity coverage . --sarif .formal/findings.sarif && concolity explore . --only <harness> --sarif .formal/findings.sarif
 ```
 
+## Built (2026-10-31): coverage in the editor, bundled
+
+solidity-language-server (main, from v0.1.38) depends on concolity as a crate and runs coverage itself, behind the
+`coverage` setting (off by default; `coverage.enabled`, `dimUncovered`, `functionSummary`, `runOnSave`). With it on:
+
+- the first Solidity file opened in a project loads the suite's last run from concolity's cache
+  (`~/.cache/formalmind/coverage`, keyed by the git tree; `coverage::latest_map`), or runs the suite in the
+  background (`run_map`), then republishes every open file. Once the files change, the last run is shown and every
+  note says it's from an earlier run;
+- a line no test runs is a hint diagnostic tagged `unnecessary`, so the editor dims it (Neovim's
+  `DiagnosticUnnecessary`, VS Code's faded text); a covered line with a side no test takes is a hint saying which
+  side and how often the other ran. Point 1 below stands: a side is never "unnecessary", a line nobody runs is;
+- hover on a line: how often it ran and each branch side's counts;
+- an inlay hint after each function's header: `12/14 lines · 20/26 sides` (function spans from tree-sitter, so it
+  needs no solc build);
+- `solidity.coverage.refresh` runs the suite again; `coverage.runOnSave` runs it after each save.
+
+The cache gained line counts for this (`<k>.lines.json` next to the branch map), and sol-debug's terminal UI became a
+feature so the server builds the runner without ratatui.
+
 ## What the language server shows
 
 1. **Diagnostics.** Each result becomes a `Diagnostic` with `code` = `ruleId` and `source` = `concolity` or `swarm`, and
